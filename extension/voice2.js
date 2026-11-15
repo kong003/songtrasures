@@ -218,25 +218,37 @@ function setupOptionsMenu() {
   // keins gefunden, bleibt er oben rechts. Die Seite baut sich neu auf, daher
   // regelmaessig nachziehen.
   const GEAR = /settings|einstellung|gear|cog|zahnrad|setting/i;
-  const findGear = () => {
-    let best = null;
+  const LOGIN = /^\s*(log\s?in|sign\s?in|anmelden|einloggen)\s*$/i;
+  // Elemente der Kopfzeile: Zahnrad (nach Name) und Login (nach Text)
+  const headerItems = () => {
+    const out = [];
     for (const e of document.querySelectorAll("button,a,[role=button],svg,i,span,div")) {
       if (box.contains(e)) continue;
       const key = [e.getAttribute("aria-label"), e.getAttribute("title"), e.getAttribute("data-testid"),
         typeof e.className === "string" ? e.className : e.getAttribute("class"), e.id].filter(Boolean).join(" ");
-      if (!GEAR.test(key)) continue;
+      const isGear = GEAR.test(key);
+      const isLogin = e.children.length <= 2 && LOGIN.test(e.textContent || "");
+      if (!isGear && !isLogin) continue;
       const r = e.getBoundingClientRect();
-      if (r.width < 8 || r.height < 8 || r.width > 120 || r.height > 120 || r.top > 150) continue;
-      // das Aeusserste (rechteste) Treffer-Element, damit nicht ein Unterelement gewinnt
-      if (!best || r.right > best.right || (r.right === best.right && r.width > best.width)) best = r;
+      if (r.width < 8 || r.height < 8 || r.width > 200 || r.height > 120 || r.top > 150) continue;
+      out.push({ r, isGear });
     }
-    return best;
+    return out;
+  };
+  // Bezugszeile: das Zahnrad, sonst Login; links von allem in derselben Zeile
+  const findAnchor = () => {
+    const items = headerItems();
+    if (!items.length) return null;
+    const ref = (items.filter((x) => x.isGear)[0] || items[0]).r;
+    const cy = ref.top + ref.height / 2;
+    const row = items.map((x) => x.r).filter((r) => Math.abs(r.top + r.height / 2 - cy) < 25);
+    return { cy, left: Math.min(...row.map((r) => r.left)) };
   };
   const place = () => {
-    const g = findGear();
-    if (g) {
-      box.style.top = Math.max(0, g.top + (g.height - btn.offsetHeight) / 2) + "px";
-      box.style.right = Math.max(0, window.innerWidth - g.left + 8) + "px";
+    const a = findAnchor();
+    if (a) {
+      box.style.top = Math.max(0, a.cy - btn.offsetHeight / 2) + "px";
+      box.style.right = Math.max(0, window.innerWidth - a.left + 8) + "px";
     } else {
       box.style.top = "8px";
       box.style.right = "60px";
