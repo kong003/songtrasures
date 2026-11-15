@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        SongTreasures Akkordtöne
 // @description Zweite Notenzeile mit den Akkorden als Blocknoten
-// @version     0.9.4
+// @version     0.9.5
 // @downloadURL https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 // @updateURL   https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 // @match       https://sheets.songtreasures.app/*
@@ -309,13 +309,27 @@ function setupOptionsMenu() {
     }
     return best && best.e;
   };
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;justify-content:flex-end;align-items:center;gap:8px;width:100%;" +
+    "box-sizing:border-box;padding:6px 0;flex:none";
+  const label = document.createElement("span");
+  label.textContent = "Anzeige";
+  label.style.cssText = "font:14px sans-serif;opacity:.7";
+  bar.append(label);
   const EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>';
   let mode = "";
   const place = () => {
     const gear = findGear();
     if (gear) {
-      // Wie die Icon-Knoepfe der Seite: gleiche Klassen, Auge-Icon in der Groesse des Zahnrads
-      if (btn.nextElementSibling !== gear) gear.parentElement.insertBefore(btn, gear);
+      // Eigene Zeile direkt unter der Kopfzeile (die Zeile mit dem Zahnrad ist
+      // schon voll, ein weiterer Knopf liesse sie umbrechen). Kopfzeile = der
+      // naechste Vorfahre des Zahnrads, der fast die ganze Breite einnimmt.
+      let row = gear.parentElement;
+      for (let i = 0; i < 5 && row.parentElement && row.getBoundingClientRect().width < 0.7 * window.innerWidth; i++) {
+        row = row.parentElement;
+      }
+      if (row.nextElementSibling !== bar) row.after(bar);
+      if (btn.parentElement !== bar) bar.append(btn);
       if (mode !== "row" || btn.className !== gear.className) {
         mode = "row";
         btn.className = gear.className;
@@ -333,6 +347,7 @@ function setupOptionsMenu() {
       }
     } else if (mode !== "corner" || btn.parentElement !== corner) {
       mode = "corner";
+      bar.remove();
       btn.className = "";
       btn.textContent = "Anzeige";
       btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;" +
