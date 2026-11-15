@@ -2,8 +2,8 @@
 // @name        SongTreasures Akkordtöne
 // @description Zweite Notenzeile mit den Akkorden als Blocknoten
 // @version     0.9.6
-// @downloadURL https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
-// @updateURL   https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
+// @downloadURL https://raw.githubusercontent.com/kong003/songtreasures/main/ios/songtreasures-akkordtoene.user.js
+// @updateURL   https://raw.githubusercontent.com/kong003/songtreasures/main/ios/songtreasures-akkordtoene.user.js
 // @match       https://sheets.songtreasures.app/*
 // @run-at      document-end
 // ==/UserScript==
