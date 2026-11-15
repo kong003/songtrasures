@@ -5,6 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 EXT=../extension
+RAW=https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 VERSION=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$EXT/manifest.json")
 
 {
@@ -12,6 +13,8 @@ VERSION=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$EXT/manifest.json")
   echo "// @name        SongTreasures Akkordtöne"
   echo "// @description Zweite Notenzeile mit den Akkorden als Blocknoten"
   echo "// @version     $VERSION"
+  echo "// @downloadURL $RAW"
+  echo "// @updateURL   $RAW"
   echo "// @match       https://sheets.songtreasures.app/*"
   echo "// @run-at      document-end"
   echo "// ==/UserScript=="
