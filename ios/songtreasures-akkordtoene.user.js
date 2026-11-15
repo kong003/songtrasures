@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        SongTreasures Akkordtöne
 // @description Zweite Notenzeile mit den Akkorden als Blocknoten
-// @version     0.8.0
+// @version     0.9.0
 // @downloadURL https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 // @updateURL   https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 // @match       https://sheets.songtreasures.app/*
@@ -235,29 +235,48 @@ function drawSecondVoice(svg, systems, { sp, keyAcc }) {
   return drawn;
 }
 
-// Schalter unten rechts; der Zustand wird gemerkt.
-function setupVoiceToggle() {
-  const KEY = "st-voice2";
-  let on = true;
-  try { on = localStorage.getItem(KEY) !== "0"; } catch { /* egal */ }
-  const root = document.documentElement;
+// Anzeige-Optionen (werden gemerkt): Akkordzeile und zweite Stimme
+const ST_OPTS = { chords: true, voice: true };
+const ST_OPTS_KEY = "st-options";
+try { Object.assign(ST_OPTS, JSON.parse(localStorage.getItem(ST_OPTS_KEY) || "{}")); } catch { /* egal */ }
+
+function applyOptions() {
+  document.documentElement.setAttribute("data-st-v2", ST_OPTS.voice ? "1" : "0");
+  document.querySelectorAll("svg").forEach((svg) => { if (svg.__stChordRow) svg.__stChordRow(ST_OPTS.chords); });
+}
+
+// Knopf unten rechts, darueber ein kleines Menue mit zwei Haken.
+function setupOptionsMenu() {
   const style = document.createElement("style");
   style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}';
   document.head.append(style);
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;font:14px sans-serif;color:#000;text-align:right";
+  const menu = document.createElement("div");
+  menu.style.cssText = "display:none;margin-bottom:6px;padding:8px 12px;background:#fff;border:1px solid #888;" +
+    "border-radius:8px;text-align:left;box-shadow:0 2px 8px rgba(0,0,0,.25)";
   const btn = document.createElement("button");
-  btn.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;padding:6px 10px;" +
-    "font:13px sans-serif;border:1px solid #888;border-radius:6px;background:#fff;color:#000;opacity:.85";
-  const apply = () => {
-    root.setAttribute("data-st-v2", on ? "1" : "0");
-    btn.textContent = on ? "2. Stimme: an" : "2. Stimme: aus";
-  };
-  btn.addEventListener("click", () => {
-    on = !on;
-    try { localStorage.setItem(KEY, on ? "1" : "0"); } catch { /* egal */ }
-    apply();
-  });
-  apply();
-  document.body.append(btn);
+  btn.textContent = "Anzeige";
+  btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;background:#fff;color:#000;opacity:.9";
+  for (const [key, label] of [["chords", "Akkordzeile (2. Notenzeile)"], ["voice", "Zweite Stimme (blau)"]]) {
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 0;white-space:nowrap";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!ST_OPTS[key];
+    cb.style.cssText = "width:20px;height:20px";
+    cb.addEventListener("change", () => {
+      ST_OPTS[key] = cb.checked;
+      try { localStorage.setItem(ST_OPTS_KEY, JSON.stringify(ST_OPTS)); } catch { /* egal */ }
+      applyOptions();
+    });
+    row.append(cb, label);
+    menu.append(row);
+  }
+  btn.addEventListener("click", () => { menu.style.display = menu.style.display === "none" ? "block" : "none"; });
+  box.append(menu, btn);
+  document.body.append(box);
+  applyOptions();
 }
 
 // SongTreasures Sheets: fuegt unter jedes Notensystem ein zweites Notensystem
@@ -480,7 +499,7 @@ function drawBlock(svg, x, voicing, kind, ctx) {
   // Tonartvorzeichen stossen.
   x += Math.max(0, (ctx.left ?? 0) + 3 - (x - extent));
 
-  const g = mk("g", {});
+  const g = mk("g", { "data-st-chordel": "1" });
   voicing.forEach((v, i) => {
     const y = yOf(v.n);
     const hx = x + cols[i] * colW;
@@ -727,6 +746,7 @@ function annotate(svg) {
   });
 
   // Verschieben und einfuegen
+  const shifted = [];
   items.forEach((i) => {
     const band = i.sys >= 0 ? i.sys : bandOf(i.bb.y);
     let dy = systems[band].dy;
@@ -736,12 +756,25 @@ function annotate(svg) {
     if (i.sys < 0 && band === systems.length - 1 && textOnly && i.bb.y > systems[band].y0 + 5 * sp) dy += ADD;
     if (dy) {
       const old = i.el.getAttribute("transform");
-      i.el.setAttribute("transform", `translate(0 ${dy})` + (old ? ` ${old}` : ""));
+      const on = `translate(0 ${dy})` + (old ? ` ${old}` : "");
+      i.el.setAttribute("transform", on);
+      shifted.push({ el: i.el, off: old, on });
     }
   });
+  const vbOff = vb.join(" ");
   vb[3] += systems.length * ADD;
   svg.setAttribute("viewBox", vb.join(" "));
-  for (const c of clones) svg.append(c);
+  for (const c of clones) { c.setAttribute("data-st-chordel", "1"); svg.append(c); }
+  // Akkordzeile ein-/ausblenden: Verschiebungen und viewBox zuruecknehmen
+  const vbOn = vb.join(" ");
+  svg.__stChordRow = (show) => {
+    for (const it of shifted) {
+      const v = show ? it.on : it.off;
+      if (v == null) it.el.removeAttribute("transform"); else it.el.setAttribute("transform", v);
+    }
+    svg.setAttribute("viewBox", show ? vbOn : vbOff);
+    for (const e of svg.querySelectorAll("[data-st-chordel]")) e.style.display = show ? "" : "none";
+  };
   // Ein Vorzeichen gilt im Takt fuer dieselbe Tonhoehe weiter, ausserdem
   // stehen die Vorzeichen der Tonart schon am Zeilenanfang (keyAcc).
   let curMeasure = null;
@@ -757,6 +790,7 @@ function annotate(svg) {
 
   // Zweite Stimme (Terz tiefer, an die Akkordtoene angepasst) in den Melodiesystemen
   try { drawSecondVoice(svg, systems, { sp, keyAcc }); } catch (e) { console.error("[voice 2]", e); }
+  if (!ST_OPTS.chords) svg.__stChordRow(false);
 }
 
 // Beim Liedwechsel ist das neue SVG manchmal noch nicht ausgemessen (getBBox
@@ -777,7 +811,7 @@ function scan(countTry) {
   });
 }
 
-setupVoiceToggle();
+setupOptionsMenu();
 new MutationObserver(() => scan(false)).observe(document.body, { childList: true, subtree: true });
 setInterval(() => scan(true), 300);
 scan(false);

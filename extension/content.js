@@ -218,7 +218,7 @@ function drawBlock(svg, x, voicing, kind, ctx) {
   // Tonartvorzeichen stossen.
   x += Math.max(0, (ctx.left ?? 0) + 3 - (x - extent));
 
-  const g = mk("g", {});
+  const g = mk("g", { "data-st-chordel": "1" });
   voicing.forEach((v, i) => {
     const y = yOf(v.n);
     const hx = x + cols[i] * colW;
@@ -465,6 +465,7 @@ function annotate(svg) {
   });
 
   // Verschieben und einfuegen
+  const shifted = [];
   items.forEach((i) => {
     const band = i.sys >= 0 ? i.sys : bandOf(i.bb.y);
     let dy = systems[band].dy;
@@ -474,12 +475,25 @@ function annotate(svg) {
     if (i.sys < 0 && band === systems.length - 1 && textOnly && i.bb.y > systems[band].y0 + 5 * sp) dy += ADD;
     if (dy) {
       const old = i.el.getAttribute("transform");
-      i.el.setAttribute("transform", `translate(0 ${dy})` + (old ? ` ${old}` : ""));
+      const on = `translate(0 ${dy})` + (old ? ` ${old}` : "");
+      i.el.setAttribute("transform", on);
+      shifted.push({ el: i.el, off: old, on });
     }
   });
+  const vbOff = vb.join(" ");
   vb[3] += systems.length * ADD;
   svg.setAttribute("viewBox", vb.join(" "));
-  for (const c of clones) svg.append(c);
+  for (const c of clones) { c.setAttribute("data-st-chordel", "1"); svg.append(c); }
+  // Akkordzeile ein-/ausblenden: Verschiebungen und viewBox zuruecknehmen
+  const vbOn = vb.join(" ");
+  svg.__stChordRow = (show) => {
+    for (const it of shifted) {
+      const v = show ? it.on : it.off;
+      if (v == null) it.el.removeAttribute("transform"); else it.el.setAttribute("transform", v);
+    }
+    svg.setAttribute("viewBox", show ? vbOn : vbOff);
+    for (const e of svg.querySelectorAll("[data-st-chordel]")) e.style.display = show ? "" : "none";
+  };
   // Ein Vorzeichen gilt im Takt fuer dieselbe Tonhoehe weiter, ausserdem
   // stehen die Vorzeichen der Tonart schon am Zeilenanfang (keyAcc).
   let curMeasure = null;
@@ -495,6 +509,7 @@ function annotate(svg) {
 
   // Zweite Stimme (Terz tiefer, an die Akkordtoene angepasst) in den Melodiesystemen
   try { drawSecondVoice(svg, systems, { sp, keyAcc }); } catch (e) { console.error("[voice 2]", e); }
+  if (!ST_OPTS.chords) svg.__stChordRow(false);
 }
 
 // Beim Liedwechsel ist das neue SVG manchmal noch nicht ausgemessen (getBBox
@@ -515,7 +530,7 @@ function scan(countTry) {
   });
 }
 
-setupVoiceToggle();
+setupOptionsMenu();
 new MutationObserver(() => scan(false)).observe(document.body, { childList: true, subtree: true });
 setInterval(() => scan(true), 300);
 scan(false);

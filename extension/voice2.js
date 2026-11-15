@@ -171,29 +171,48 @@ function drawSecondVoice(svg, systems, { sp, keyAcc }) {
   return drawn;
 }
 
-// Schalter unten rechts; der Zustand wird gemerkt.
-function setupVoiceToggle() {
-  const KEY = "st-voice2";
-  let on = true;
-  try { on = localStorage.getItem(KEY) !== "0"; } catch { /* egal */ }
-  const root = document.documentElement;
+// Anzeige-Optionen (werden gemerkt): Akkordzeile und zweite Stimme
+const ST_OPTS = { chords: true, voice: true };
+const ST_OPTS_KEY = "st-options";
+try { Object.assign(ST_OPTS, JSON.parse(localStorage.getItem(ST_OPTS_KEY) || "{}")); } catch { /* egal */ }
+
+function applyOptions() {
+  document.documentElement.setAttribute("data-st-v2", ST_OPTS.voice ? "1" : "0");
+  document.querySelectorAll("svg").forEach((svg) => { if (svg.__stChordRow) svg.__stChordRow(ST_OPTS.chords); });
+}
+
+// Knopf unten rechts, darueber ein kleines Menue mit zwei Haken.
+function setupOptionsMenu() {
   const style = document.createElement("style");
   style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}';
   document.head.append(style);
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;font:14px sans-serif;color:#000;text-align:right";
+  const menu = document.createElement("div");
+  menu.style.cssText = "display:none;margin-bottom:6px;padding:8px 12px;background:#fff;border:1px solid #888;" +
+    "border-radius:8px;text-align:left;box-shadow:0 2px 8px rgba(0,0,0,.25)";
   const btn = document.createElement("button");
-  btn.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;padding:6px 10px;" +
-    "font:13px sans-serif;border:1px solid #888;border-radius:6px;background:#fff;color:#000;opacity:.85";
-  const apply = () => {
-    root.setAttribute("data-st-v2", on ? "1" : "0");
-    btn.textContent = on ? "2. Stimme: an" : "2. Stimme: aus";
-  };
-  btn.addEventListener("click", () => {
-    on = !on;
-    try { localStorage.setItem(KEY, on ? "1" : "0"); } catch { /* egal */ }
-    apply();
-  });
-  apply();
-  document.body.append(btn);
+  btn.textContent = "Anzeige";
+  btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;background:#fff;color:#000;opacity:.9";
+  for (const [key, label] of [["chords", "Akkordzeile (2. Notenzeile)"], ["voice", "Zweite Stimme (blau)"]]) {
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 0;white-space:nowrap";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!ST_OPTS[key];
+    cb.style.cssText = "width:20px;height:20px";
+    cb.addEventListener("change", () => {
+      ST_OPTS[key] = cb.checked;
+      try { localStorage.setItem(ST_OPTS_KEY, JSON.stringify(ST_OPTS)); } catch { /* egal */ }
+      applyOptions();
+    });
+    row.append(cb, label);
+    menu.append(row);
+  }
+  btn.addEventListener("click", () => { menu.style.display = menu.style.display === "none" ? "block" : "none"; });
+  box.append(menu, btn);
+  document.body.append(box);
+  applyOptions();
 }
 
 if (typeof module !== "undefined") module.exports = { harmonyBelow, v2Midi };
