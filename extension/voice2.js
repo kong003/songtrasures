@@ -172,58 +172,74 @@ function drawSecondVoice(svg, systems, { sp, keyAcc }) {
 }
 
 // Anzeige-Optionen (werden gemerkt): Akkordzeile und zweite Stimme
-const ST_OPTS = { chords: true, voice: true };
+const ST_OPTS = { chords: true, voice: true, color: "#1565c0" };
+// Farben fuer die zweite Stimme (Auswahl im Menue)
+const ST_COLORS = [["#1565c0", "Blue"], ["#c62828", "Red"], ["#2e7d32", "Green"], ["#6a1b9a", "Purple"], ["#ef6c00", "Orange"], ["#000000", "Black"]];
 const ST_OPTS_KEY = "st-options";
 try { Object.assign(ST_OPTS, JSON.parse(localStorage.getItem(ST_OPTS_KEY) || "{}")); } catch { /* egal */ }
 
 function applyOptions() {
   document.documentElement.setAttribute("data-st-v2", ST_OPTS.voice ? "1" : "0");
+  document.documentElement.style.setProperty("--st-v2", ST_COLORS.some(([c]) => c === ST_OPTS.color) ? ST_OPTS.color : ST_COLORS[0][0]);
   document.querySelectorAll("svg").forEach((svg) => { if (svg.__stChordRow) svg.__stChordRow(ST_OPTS.chords); });
 }
 
-// Knopf "Anzeige" mit kleinem Menue (zwei Haken). Er wird in die Zeile direkt
-// vor das Zahnrad eingefuegt und uebernimmt dessen Klassen, sodass er wie die
-// Knoepfe der Seite aussieht und nichts ueberdeckt. Findet sich kein Zahnrad,
-// sitzt er unten rechts.
+// Knopf mit Auge (Anzeige) rechts neben dem Zahnrad, in derselben Reihe. Er
+// uebernimmt die Klassen des Zahnrads (icon-button), das Menue nutzt die Klassen
+// der Seite (Karte wie der Einstellungs-Dialog, Auswahlfelder wie "Transposition").
+// Findet sich kein Zahnrad, sitzt der Knopf unten rechts.
 function setupOptionsMenu() {
   const style = document.createElement("style");
-  style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}';
+  style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}' +
+    '[data-st-v2el] [fill]:not([fill="none"]){fill:var(--st-v2,#1565c0)!important}' +
+    '[data-st-v2el] [stroke]:not([stroke="none"]){stroke:var(--st-v2,#1565c0)!important}';
   document.head.append(style);
 
+  const EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>';
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.textContent = "Anzeige";
+  btn.title = "Display";
+  btn.setAttribute("aria-label", "Display");
+  const wrap = document.createElement("div");   // wie die Huelle um die anderen Knoepfe
+  wrap.append(btn);
   const corner = document.createElement("div");
   corner.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999";
   document.body.append(corner);
 
   const menu = document.createElement("div");
-  menu.style.cssText = "display:none;position:fixed;z-index:99999;padding:8px 12px;background:#fff;color:#000;" +
-    "font:14px sans-serif;border:1px solid #888;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.25)";
-  for (const [key, label] of [["chords", "Akkordzeile (2. Notenzeile)"], ["voice", "Zweite Stimme (blau)"]]) {
-    const row = document.createElement("label");
-    row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 0;white-space:nowrap";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = !!ST_OPTS[key];
-    cb.style.cssText = "width:20px;height:20px";
-    cb.addEventListener("change", () => {
-      ST_OPTS[key] = cb.checked;
+  menu.className = "bg-white rounded-lg shadow dark:bg-slate-800";
+  menu.style.cssText = "display:none;position:fixed;z-index:99999;padding:12px;gap:12px;flex-wrap:wrap;max-width:calc(100vw - 16px);box-sizing:border-box;" +
+    "border:1px solid rgba(128,128,128,.3);box-shadow:0 4px 12px rgba(0,0,0,.15)";
+  for (const [key, label] of [["chords", "Chord staff"], ["voice", "Harmony"], ["color", "Harmony color"]]) {
+    const field = document.createElement("div");
+    field.style.cssText = "min-width:110px";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.style.cssText = "display:block;font-size:12px;margin-bottom:4px";
+    const sel = document.createElement("select");
+    sel.className = "control control-default block w-full px-2.5";
+    for (const [v, t] of key === "color" ? ST_COLORS : [["1", "On"], ["0", "Off"]]) sel.add(new Option(t, v));
+    sel.value = key === "color" ? ST_OPTS.color : ST_OPTS[key] ? "1" : "0";
+    sel.addEventListener("change", () => {
+      ST_OPTS[key] = key === "color" ? sel.value : sel.value === "1";
       try { localStorage.setItem(ST_OPTS_KEY, JSON.stringify(ST_OPTS)); } catch { /* egal */ }
       applyOptions();
     });
-    row.append(cb, label);
-    menu.append(row);
+    field.append(lab, sel);
+    menu.append(field);
   }
   document.body.append(menu);
 
   const openMenu = (open) => {
     if (open) {
       const r = btn.getBoundingClientRect();
-      menu.style.top = r.bottom + 6 + "px";
-      menu.style.right = Math.max(8, window.innerWidth - r.right) + "px";
+      menu.style.display = "flex";
+      menu.style.top = r.bottom + 8 + "px";
+      const left = Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8);
+      menu.style.left = Math.max(8, left) + "px";
+    } else {
+      menu.style.display = "none";
     }
-    menu.style.display = open ? "block" : "none";
   };
   btn.addEventListener("click", (e) => { e.stopPropagation(); openMenu(menu.style.display === "none"); });
   document.addEventListener("click", (e) => { if (!menu.contains(e.target)) openMenu(false); });
@@ -245,49 +261,43 @@ function setupOptionsMenu() {
     }
     return best && best.e;
   };
-  const bar = document.createElement("div");
-  bar.style.cssText = "display:flex;justify-content:flex-end;align-items:center;gap:8px;width:100%;" +
-    "box-sizing:border-box;padding:6px 0;flex:none";
-  const label = document.createElement("span");
-  label.textContent = "Anzeige";
-  label.style.cssText = "font:14px sans-serif;opacity:.7";
-  bar.append(label);
-  const EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>';
   let mode = "";
+  let iconFor = null;
+  const setIcon = (gear) => {
+    const g = gear && gear.querySelector("svg");
+    const svg = g ? g.cloneNode(false) : document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" })) svg.setAttribute(k, v);
+    if (!g) { svg.setAttribute("width", "20"); svg.setAttribute("height", "20"); }
+    svg.innerHTML = EYE;
+    btn.replaceChildren(svg);
+  };
   const place = () => {
     const gear = findGear();
     if (gear) {
-      // Eigene Zeile direkt unter der Kopfzeile (die Zeile mit dem Zahnrad ist
-      // schon voll, ein weiterer Knopf liesse sie umbrechen). Kopfzeile = der
-      // naechste Vorfahre des Zahnrads, der fast die ganze Breite einnimmt.
-      let row = gear.parentElement;
-      for (let i = 0; i < 5 && row.parentElement && row.getBoundingClientRect().width < 0.7 * window.innerWidth; i++) {
-        row = row.parentElement;
-      }
-      if (row.nextElementSibling !== bar) row.after(bar);
-      if (btn.parentElement !== bar) bar.append(btn);
-      if (mode !== "row" || btn.className !== gear.className) {
+      // direkt rechts neben das Zahnrad (dessen Huelle), gleiche Reihe
+      // (der Zahnrad-Knopf steckt in Huellen; wir suchen das Element, das direkt
+      // in der Flex-Reihe der Knoepfe liegt)
+      let anchor = gear;
+      while (anchor.parentElement && anchor.parentElement !== document.body &&
+        getComputedStyle(anchor.parentElement).display !== "flex") anchor = anchor.parentElement;
+      if (btn.parentElement !== wrap) wrap.append(btn);
+      if (anchor.nextElementSibling !== wrap) anchor.after(wrap);
+      if (mode !== "row" || iconFor !== gear.className) {
         mode = "row";
+        iconFor = gear.className;
         btn.className = gear.className;
         btn.removeAttribute("style");
-        const g = gear.querySelector("svg");
-        const svg = g ? g.cloneNode(false) : document.createElementNS("http://www.w3.org/2000/svg", "svg");
-        svg.setAttribute("class", "");
-        for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
-          "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" })) svg.setAttribute(k, v);
-        if (!g || !g.getAttribute("width")) { svg.setAttribute("width", "18"); svg.setAttribute("height", "18"); }
-        svg.innerHTML = EYE;
-        btn.replaceChildren(svg);
-        btn.title = "Anzeige";
-        btn.setAttribute("aria-label", "Anzeige");
+        setIcon(gear);
       }
-    } else if (mode !== "corner" || btn.parentElement !== corner) {
+    } else if (mode !== "corner") {
       mode = "corner";
-      bar.remove();
-      btn.className = "";
-      btn.textContent = "Anzeige";
-      btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;" +
-        "background:#fff;color:#000;opacity:.9";
+      iconFor = null;
+      wrap.remove();
+      btn.className = "icon-button";
+      btn.style.cssText = "width:42px;height:42px;display:flex;align-items:center;justify-content:center;" +
+        "border:1px solid #d1d5db;border-radius:8px;background:#f9fafb;color:#111827";
+      setIcon(null);
       corner.append(btn);
     }
   };
