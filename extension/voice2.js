@@ -245,15 +245,32 @@ function setupOptionsMenu() {
     }
     return best && best.e;
   };
+  const EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>';
+  let mode = "";
   const place = () => {
     const gear = findGear();
     if (gear) {
+      // Wie die Icon-Knoepfe der Seite: gleiche Klassen, Auge-Icon in der Groesse des Zahnrads
       if (btn.nextElementSibling !== gear) gear.parentElement.insertBefore(btn, gear);
-      btn.className = gear.className;
-      btn.style.cssText = "width:auto;min-width:0;padding:0 14px;white-space:nowrap;flex:none;margin-right:8px;" +
-        "font-size:14px;cursor:pointer";
-    } else if (btn.parentElement !== corner) {
+      if (mode !== "row" || btn.className !== gear.className) {
+        mode = "row";
+        btn.className = gear.className;
+        btn.removeAttribute("style");
+        const g = gear.querySelector("svg");
+        const svg = g ? g.cloneNode(false) : document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("class", "");
+        for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+          "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" })) svg.setAttribute(k, v);
+        if (!g || !g.getAttribute("width")) { svg.setAttribute("width", "18"); svg.setAttribute("height", "18"); }
+        svg.innerHTML = EYE;
+        btn.replaceChildren(svg);
+        btn.title = "Anzeige";
+        btn.setAttribute("aria-label", "Anzeige");
+      }
+    } else if (mode !== "corner" || btn.parentElement !== corner) {
+      mode = "corner";
       btn.className = "";
+      btn.textContent = "Anzeige";
       btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;" +
         "background:#fff;color:#000;opacity:.9";
       corner.append(btn);
