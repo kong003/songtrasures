@@ -492,6 +492,9 @@ function annotate(svg) {
     if (o.mid !== curMeasure) { curMeasure = o.mid; measureAcc = {}; }
     drawBlock(svg, o.x, v, o.kind, { topY: s.y0 + s.dy + 7 * sp, sp, keyAcc, measureAcc, left: o.left });
   }
+
+  // Zweite Stimme (Terz tiefer, an die Akkordtoene angepasst) in den Melodiesystemen
+  try { drawSecondVoice(svg, systems, { sp, keyAcc }); } catch (e) { console.error("[voice 2]", e); }
 }
 
 // Beim Liedwechsel ist das neue SVG manchmal noch nicht ausgemessen (getBBox
@@ -512,6 +515,7 @@ function scan(countTry) {
   });
 }
 
+setupVoiceToggle();
 new MutationObserver(() => scan(false)).observe(document.body, { childList: true, subtree: true });
 setInterval(() => scan(true), 300);
 scan(false);

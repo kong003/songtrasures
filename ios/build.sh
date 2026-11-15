@@ -18,6 +18,7 @@ VERSION=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$EXT/manifest.json")
   echo "(function () {"
   echo "'use strict';"
   cat "$EXT/glyphs.js"
+  cat "$EXT/voice2.js" | grep -v '^if (typeof module'
   cat "$EXT/content.js"
   echo "})();"
 } > songtreasures-akkordtoene.user.js
