@@ -1,0 +1,1518 @@
+From bc0b21df0f05fdde8c405c8d5597529ee1deadd3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 18:47:29 +0000
+Subject: [PATCH] Add Display menu with chord staff and second voice
+
+Adds an eye button next to Settings that opens a Display dialog with
+three options, remembered per device and off by default:
+
+- Chord staff: a second staff under each line with the chords as block notes
+- Second voice: a third below the melody, adjusted to fit the chords when
+  the diatonic third is not a chord tone (parallel for passing notes)
+- Second voice color
+
+The sheet SVG comes from the API, so both are drawn into it in the browser
+(services/sheetOverlay) after it is shown, and redrawn from the original when
+an option changes.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0171SfRvSXj6GAkLSV8EKZTr
+---
+ src/components/DisplayMenu.vue           |  75 +++++
+ src/components/SvgViewer.vue             |  50 ++-
+ src/services/sheetDisplay.ts             |  42 +++
+ src/services/sheetOverlay/chordStaff.ts  | 405 +++++++++++++++++++++++
+ src/services/sheetOverlay/chords.ts      | 157 +++++++++
+ src/services/sheetOverlay/draw.ts        |  55 +++
+ src/services/sheetOverlay/glyphs.ts      |  61 ++++
+ src/services/sheetOverlay/index.ts       |  41 +++
+ src/services/sheetOverlay/layout.ts      | 218 ++++++++++++
+ src/services/sheetOverlay/secondVoice.ts | 262 +++++++++++++++
+ src/views/Sheets.vue                     |   2 +
+ 11 files changed, 1365 insertions(+), 3 deletions(-)
+ create mode 100644 src/components/DisplayMenu.vue
+ create mode 100644 src/services/sheetDisplay.ts
+ create mode 100644 src/services/sheetOverlay/chordStaff.ts
+ create mode 100644 src/services/sheetOverlay/chords.ts
+ create mode 100644 src/services/sheetOverlay/draw.ts
+ create mode 100644 src/services/sheetOverlay/glyphs.ts
+ create mode 100644 src/services/sheetOverlay/index.ts
+ create mode 100644 src/services/sheetOverlay/layout.ts
+ create mode 100644 src/services/sheetOverlay/secondVoice.ts
+
+diff --git a/src/components/DisplayMenu.vue b/src/components/DisplayMenu.vue
+new file mode 100644
+index 0000000..1ea5f26
+--- /dev/null
++++ b/src/components/DisplayMenu.vue
+@@ -0,0 +1,75 @@
++<template>
++    <div>
++        <Modal title="Display" v-model:show="show">
++            <template #button>
++                <button
++                    @click="show = !show"
++                    type="button"
++                    class="icon-button"
++                    title="Display"
++                >
++                    <EyeIcon class="w-5 h-5 shrink-0"></EyeIcon>
++                    <span class="sr-only">Display</span>
++                </button>
++            </template>
++            <div class="flex flex-wrap">
++                <div class="m-2">
++                    <label class="flex items-center gap-2">
++                        <input
++                            v-model="display.chords"
++                            type="checkbox"
++                            class="w-5 h-5 accent-blue-600"
++                        />
++                        Chord staff
++                    </label>
++                    <p class="text-xs opacity-60 mt-1 max-w-[16rem]">
++                        A second staff under each line with the chords as block
++                        notes.
++                    </p>
++                </div>
++                <div class="m-2">
++                    <label class="flex items-center gap-2">
++                        <input
++                            v-model="display.voice"
++                            type="checkbox"
++                            class="w-5 h-5 accent-blue-600"
++                        />
++                        Second voice
++                    </label>
++                    <p class="text-xs opacity-60 mt-1 max-w-[16rem]">
++                        A third below the melody, adjusted to fit the chords.
++                    </p>
++                </div>
++                <div class="m-2">
++                    <label>Second voice color</label>
++                    <div class="flex items-center gap-2">
++                        <input
++                            v-model="display.voiceColor"
++                            type="color"
++                            class="control control-default w-[60px] cursor-pointer p-1"
++                            :disabled="!display.voice"
++                        />
++                        <BaseButton
++                            :disabled="
++                                !display.voice ||
++                                display.voiceColor === DEFAULT_VOICE_COLOR
++                            "
++                            @click="display.voiceColor = DEFAULT_VOICE_COLOR"
++                        >
++                            Reset
++                        </BaseButton>
++                    </div>
++                </div>
++            </div>
++        </Modal>
++    </div>
++</template>
++<script lang="ts" setup>
++import { ref } from "vue";
++import { EyeIcon } from "@heroicons/vue/outline";
++import Modal from "./Modal.vue";
++import BaseButton from "./BaseButton.vue";
++import { DEFAULT_VOICE_COLOR, display } from "../services/sheetDisplay";
++
++const show = ref(false);
++</script>
+diff --git a/src/components/SvgViewer.vue b/src/components/SvgViewer.vue
+index 5fcb826..8ac8996 100644
+--- a/src/components/SvgViewer.vue
++++ b/src/components/SvgViewer.vue
+@@ -1,19 +1,52 @@
+ <template>
+-    <div id="svg-viewer" v-html="svg" :style="loading ? 'display: none;' : ''"></div>
++    <div id="svg-viewer" ref="root" v-html="svg" :style="loading ? 'display: none;' : ''"></div>
+ </template>
+ <script lang="ts" setup>
+-import { watch, onMounted, ref } from "vue";
++import { watch, onMounted, ref, nextTick } from "vue";
++import { display } from "../services/sheetDisplay";
++import { enhancePage, newOverlayState } from "../services/sheetOverlay";
+ 
+ const props = defineProps<{
+     svg: string;
+ }>();
+ 
+ const loading = ref(false)
++const root = ref(null as HTMLElement | null)
++
++// Only the latest enhancement may draw: a new sheet or another option cancels the one running
++let enhanceGeneration = 0;
++
++/**
++ * Adds what is chosen in the Display menu (chord staff, second voice) to the pages. A page can
++ * only be measured while it is shown, so this waits for that and tries again for a moment.
++ */
++const enhance = async () => {
++    const generation = ++enhanceGeneration;
++    const options = { chords: display.chords, voice: display.voice, voiceColor: display.voiceColor };
++    if (!options.chords && !options.voice) return;
++    await nextTick();
++    const el = root.value;
++    if (!el) return;
++    const state = newOverlayState();
++    const pages = Array.from(el.children).filter((c): c is SVGSVGElement => c.tagName.toLowerCase() === "svg");
++    for (const page of pages) {
++        for (let tries = 0; tries < 30; tries++) {
++            if (generation !== enhanceGeneration) return;
++            try {
++                if (enhancePage(page, options, state)) break;
++            } catch (e) {
++                console.error(e);
++                break;
++            }
++            await new Promise((r) => requestAnimationFrame(r));
++        }
++    }
++};
+ 
+ const fixElements = async () => {
+     loading.value = true;
+     await new Promise(r => setTimeout(r, 10))
+-    const els = document.getElementById("svg-viewer")?.children;
++    const els = root.value?.children;
+ 
+     if (!els) return;
+ 
+@@ -23,6 +56,7 @@ const fixElements = async () => {
+         el.removeAttribute("height");
+     }
+     loading.value = false;
++    await enhance();
+ };
+ 
+ onMounted(fixElements);
+@@ -31,4 +65,14 @@ watch(
+     () => props.svg,
+     fixElements
+ );
++
++// Another option: draw the pages again from the original, so nothing from before is left
++watch(
++    () => [display.chords, display.voice, display.voiceColor],
++    () => {
++        enhanceGeneration++;
++        if (root.value) root.value.innerHTML = props.svg;
++        fixElements();
++    }
++);
+ </script>
+diff --git a/src/services/sheetDisplay.ts b/src/services/sheetDisplay.ts
+new file mode 100644
+index 0000000..dbfcffe
+--- /dev/null
++++ b/src/services/sheetDisplay.ts
+@@ -0,0 +1,42 @@
++import { reactive, watch } from "vue";
++
++/**
++ * What is added to the sheet besides the notes (see services/sheetOverlay). Remembered per
++ * device; both are off until switched on in the Display menu.
++ */
++export const DEFAULT_VOICE_COLOR = "#2563eb";
++
++type Display = {
++    /** a second staff under each system with the chords as block notes */
++    chords: boolean;
++    /** a second voice, a third below the melody and fitted to the chords */
++    voice: boolean;
++    /** colour of the second voice */
++    voiceColor: string;
++};
++
++const KEY = "display";
++
++function load(): Display {
++    const defaults: Display = {
++        chords: false,
++        voice: false,
++        voiceColor: DEFAULT_VOICE_COLOR,
++    };
++    try {
++        const saved = JSON.parse(localStorage.getItem(KEY) ?? "{}");
++        return {
++            chords: saved.chords === true,
++            voice: saved.voice === true,
++            voiceColor: /^#[0-9a-f]{6}$/i.test(saved.voiceColor)
++                ? saved.voiceColor
++                : defaults.voiceColor,
++        };
++    } catch {
++        return defaults;
++    }
++}
++
++export const display = reactive(load());
++
++watch(display, (v) => localStorage.setItem(KEY, JSON.stringify(v)));
+diff --git a/src/services/sheetOverlay/chordStaff.ts b/src/services/sheetOverlay/chordStaff.ts
+new file mode 100644
+index 0000000..f793bda
+--- /dev/null
++++ b/src/services/sheetOverlay/chordStaff.ts
+@@ -0,0 +1,405 @@
++import { type Chord, LET, pickVoicing, type VoiceNote } from "./chords";
++import { bbox, glyph, type Ink, mk, stroke } from "./draw";
++import { GLYPHS } from "./glyphs";
++import type { BarKind, Layout, System } from "./layout";
++
++/**
++ * Adds a second staff under every system of a sheet page, with each chord as a block of
++ * stacked notes (like in printed chord sheets). The page's own elements are shifted down to
++ * make room and the viewBox grows accordingly.
++ */
++
++/** Carried between the pages of one sheet. */
++export type ChordStaffState = { carry: Chord | null; prevMean: number | null };
++
++type NoteKind = BarKind | "half" | "quarter";
++
++const KIND_OF_EIGHTHS: Record<number, NoteKind> = {
++    2: "quarter",
++    3: "dottedQuarter",
++    4: "half",
++    6: "dotted",
++    8: "whole",
++    12: "dottedWhole",
++};
++
++/**
++ * Divides a bar (u eighths) between the chords. Every share must be a single note value
++ * and a multiple of q (quarter, in 6/8 a dotted quarter); picks the split closest to the
++ * actual shares. null when none fits.
++ */
++function splitBar(fracs: number[], u: number, q: number): number[] | null {
++    let best: number[] | null = null;
++    let bestCost = Infinity;
++    const rec = (i: number, left: number, acc: number[], cost: number) => {
++        if (i === fracs.length) {
++            if (left === 0 && cost < bestCost) {
++                bestCost = cost;
++                best = [...acc];
++            }
++            return;
++        }
++        const remaining = fracs.length - i - 1;
++        for (let e = q; e <= left; e += q) {
++            if (!KIND_OF_EIGHTHS[e]) continue;
++            const rest = left - e;
++            if (remaining === 0 ? rest !== 0 : rest < remaining * q) continue;
++            acc.push(e);
++            rec(i + 1, rest, acc, cost + Math.abs(e - fracs[i] * u));
++            acc.pop();
++        }
++    };
++    rec(0, u, [], 0);
++    return best;
++}
++
++type BlockCtx = {
++    topY: number;
++    sp: number;
++    keyAcc: Record<string, number>;
++    measureAcc: Record<number, number>;
++    left: number;
++    ink: Ink;
++};
++
++function drawBlock(
++    parent: Element,
++    x0: number,
++    voicing: VoiceNote[],
++    kind: NoteKind,
++    ctx: BlockCtx
++) {
++    const { topY, sp, keyAcc, measureAcc, ink } = ctx;
++    let x = x0;
++    const k = sp / 10;
++    const yOf = (n: number) => topY + 4 * sp - (n * sp) / 2;
++    // whole, dottedWhole: whole note; half, dotted: half (dotted half); quarter, dottedQuarter: quarter
++    const noStem = kind === "whole" || kind === "dottedWhole";
++    const headName = noStem
++        ? "whole"
++        : kind === "quarter" || kind === "dottedQuarter"
++        ? "filled"
++        : "open";
++    const hasDot =
++        kind === "dotted" || kind === "dottedWhole" || kind === "dottedQuarter";
++    const colW = GLYPHS.filled.w * k;
++    const headW = GLYPHS[headName].w * k;
++
++    // Seconds: the upper head goes to the right of the stem
++    const cols: number[] = [];
++    voicing.forEach((v, i) => {
++        cols.push(
++            i > 0 && v.n - voicing[i - 1].n === 1 && cols[i - 1] === 0 ? 1 : 0
++        );
++    });
++
++    // An accidental only where it differs from what already holds there: the key signature
++    // (at the line start) or one on the same height in the same measure.
++    type Acc = {
++        name: "sharp" | "flat" | "natural" | "dsharp";
++        times: number;
++        col: number;
++        w: number;
++    } | null;
++    const accs: Acc[] = [];
++    let accCount = 0;
++    let extent = 0;
++    voicing.forEach((v) => {
++        const inEffect = measureAcc[v.n] ?? (keyAcc[LET[v.li]] || 0);
++        measureAcc[v.n] = v.acc;
++        if (v.acc === inEffect) {
++            accs.push(null);
++            return;
++        }
++        // Double sharp as its own mark (the sheets have no glyph for it), double flat as two flats
++        const name =
++            v.acc > 1
++                ? "dsharp"
++                : v.acc > 0
++                ? "sharp"
++                : v.acc < 0
++                ? "flat"
++                : "natural";
++        const times = v.acc < -1 ? 2 : 1;
++        const w = (name === "dsharp" ? 8 : GLYPHS[name].w) * k;
++        const col = accCount % 2;
++        accCount++;
++        accs.push({ name, times, col, w });
++        extent = Math.max(
++            extent,
++            2.5 * k + w + col * (w + 1.5 * k) + (times - 1) * (w + 1)
++        );
++    });
++    // Room on the left so accidentals don't hit the bar line, time or key signature
++    x += Math.max(0, ctx.left + 3 - (x - extent));
++
++    const g = mk("g", {});
++    voicing.forEach((v, i) => {
++        const y = yOf(v.n);
++        const hx = x + cols[i] * colW;
++        const ledgers: number[] = [];
++        if (v.n <= -2) for (let n = -2; n >= v.n; n -= 2) ledgers.push(n);
++        else if (v.n >= 10) for (let n = 10; n <= v.n; n += 2) ledgers.push(n);
++        for (const n of ledgers)
++            g.append(
++                stroke(hx - 3 * k, yOf(n), hx + headW + 3 * k, yOf(n), 1, ink)
++            );
++
++        g.append(glyph(headName, hx, y, k, ink));
++
++        const a = accs[i];
++        if (a && a.name === "dsharp") {
++            const cx = hx - 2.5 * k - a.w / 2 - a.col * (a.w + 1.5 * k);
++            const r = 3.2 * k;
++            g.append(
++                mk("path", {
++                    d: `M${cx - r} ${y - r}L${cx + r} ${y + r}M${cx + r} ${
++                        y - r
++                    }L${cx - r} ${y + r}`,
++                    stroke: ink,
++                    "stroke-width": 2 * k,
++                    fill: "none",
++                })
++            );
++        } else if (a) {
++            for (let t = 0; t < a.times; t++) {
++                const ax =
++                    hx -
++                    2.5 * k -
++                    a.w -
++                    a.col * (a.w + 1.5 * k) -
++                    t * (a.w + 1);
++                g.append(
++                    glyph(a.name as "sharp" | "flat" | "natural", ax, y, k, ink)
++                );
++            }
++        }
++    });
++
++    const lowY = yOf(voicing[0].n);
++    const highY = yOf(voicing[voicing.length - 1].n);
++    if (!noStem) {
++        const sx = x + colW - 0.75 * k;
++        g.append(stroke(sx, lowY, sx, highY - 3.5 * sp, 1.5, ink));
++    }
++    if (hasDot) {
++        const dx = x + headW + (cols.includes(1) ? colW : 0) + 4.5 * k;
++        voicing.forEach((v) => {
++            const y = yOf(v.n) - (v.n % 2 === 0 ? sp / 2 : 0);
++            g.append(glyph("dot", dx, y, k, ink));
++        });
++    }
++    parent.append(g);
++}
++
++type Placed = {
++    k: number;
++    mid: string;
++    left: number;
++    chord: Chord;
++    kind: NoteKind;
++    x: number;
++};
++
++/** Adds the chord staff. `layout` comes from readLayout for the same page. */
++export function addChordStaff(
++    svg: SVGSVGElement,
++    layout: Layout,
++    state: ChordStaffState
++) {
++    const { systems, sp, keyAcc, ink } = layout;
++    if (!systems.some((s) => s.chords.length)) return;
++    const vb = (svg.getAttribute("viewBox") || "")
++        .trim()
++        .split(/\s+/)
++        .map(Number);
++    if (vb.length !== 4 || vb.some(Number.isNaN)) return;
++
++    // Top level: the systems and everything else (measure numbers, title ...)
++    const items: { el: Element; bb: DOMRect; sys: number }[] = [];
++    for (const el of Array.from(svg.children)) {
++        const bb = bbox(el);
++        if (bb)
++            items.push({ el, bb, sys: systems.findIndex((s) => s.el === el) });
++    }
++    const ADD = 8 * sp;
++    // What is no system and starts more than 1.5 spacings below the previous system belongs
++    // to the next one (measure numbers sit above their system).
++    const bandOf = (top: number) => {
++        let s = 0;
++        for (let k = 1; k < systems.length; k++)
++            if (top >= systems[k - 1].y0 + 5.5 * sp) s = k;
++        return s;
++    };
++    systems.forEach((s, k) => {
++        s.dy = k * ADD;
++    });
++
++    // Line start (clef, key, time signature) and bar lines, copied per system
++    const clones: Element[] = [];
++    systems.forEach((s) => {
++        for (const p of s.prefix) {
++            const c = p.el.cloneNode(true) as Element;
++            const old = c.getAttribute("transform");
++            c.setAttribute(
++                "transform",
++                `translate(0 ${s.dy + 7 * sp})` + (old ? ` ${old}` : "")
++            );
++            clones.push(c);
++        }
++        for (const m of s.measures) {
++            for (const r of Array.from(m.el.children)) {
++                if (r.tagName !== "rect") continue;
++                const b = bbox(r);
++                if (!b || b.height < 3.5 * sp) continue;
++                const c = r.cloneNode(false) as Element;
++                c.setAttribute("y", String(b.y + s.dy + 7 * sp));
++                c.removeAttribute("transform");
++                clones.push(c);
++            }
++        }
++        const x1 = Math.min(...s.measures.map((m) => m.x));
++        const x2 = Math.max(...s.measures.map((m) => m.x2));
++        for (let j = 0; j < 5; j++) {
++            clones.push(
++                mk("path", {
++                    d: `M${x1} ${s.y0 + s.dy + 7 * sp + j * sp} H${x2}`,
++                    stroke: ink,
++                    "stroke-width": 1,
++                    fill: "none",
++                })
++            );
++        }
++        clones.push(
++            mk("rect", {
++                x: x1,
++                y: s.y0 + s.dy,
++                width: 1,
++                height: 11 * sp,
++                fill: ink,
++            })
++        );
++    });
++
++    // Place the chords into measures
++    const out: Placed[] = [];
++    let carry = state.carry;
++    systems.forEach((s, k) => {
++        s.measures.forEach((m, mi) => {
++            const lo = mi === 0 ? Math.max(m.x, s.prefixEnd) : m.x;
++            const inMeasure = s.chords
++                .filter((c) => c.x >= m.x - 0.5 && c.x < m.x2)
++                .sort((a, b) => a.x - b.x);
++            const width = m.x2 - lo;
++            // The chords sounding in this measure. Without a symbol of its own (or when the
++            // first comes late) the previous one carries on.
++            const entries: { chord: Chord; x: number }[] = [];
++            if (
++                carry &&
++                (inMeasure.length === 0 || inMeasure[0].x - lo > 0.3 * width)
++            ) {
++                entries.push({ chord: carry, x: lo });
++            }
++            inMeasure.forEach((c) => entries.push({ chord: c.chord, x: c.x }));
++            if (entries.length === 0) return;
++            // A measure is always filled: one chord = one block of the whole bar's value; when
++            // the chord changes, each gets the note value closest to its share, together the bar.
++            const spans = entries.map((e, i) =>
++                Math.max(
++                    1,
++                    (i + 1 < entries.length ? entries[i + 1].x : m.x2) - e.x
++                )
++            );
++            const total = spans.reduce((a, b) => a + b, 0);
++            let parts: number[] | null = null;
++            if (entries.length > 1 && layout.barUnits > 0) {
++                parts = splitBar(
++                    spans.map((span) => span / total),
++                    layout.barUnits,
++                    layout.compound ? 3 : 2
++                );
++            }
++            if (parts) {
++                entries.forEach((e, i) => {
++                    out.push({
++                        k,
++                        mid: `${k}:${mi}`,
++                        left: lo,
++                        chord: e.chord,
++                        kind: KIND_OF_EIGHTHS[parts![i]],
++                        x: i === 0 ? lo + (mi === 0 ? 12 : 17) : e.x + 4,
++                    });
++                });
++            } else {
++                // One chord (or no fitting split): the one sounding longer
++                let pick = entries[0];
++                let best = -1;
++                entries.forEach((e, i) => {
++                    if (spans[i] > best + 0.5) {
++                        best = spans[i];
++                        pick = e;
++                    }
++                });
++                out.push({
++                    k,
++                    mid: `${k}:${mi}`,
++                    x: lo + (mi === 0 ? 12 : 17),
++                    left: lo,
++                    chord: pick.chord,
++                    kind: layout.barKind,
++                });
++            }
++            carry = entries[entries.length - 1].chord;
++        });
++    });
++    state.carry = carry;
++
++    // Shift and insert
++    items.forEach((i) => {
++        const band = i.sys >= 0 ? i.sys : bandOf(i.bb.y);
++        let dy = systems[band].dy;
++        // Plain text below the last system (footer, verses) moves below the new staff
++        const textOnly =
++            i.el.tagName === "text" ||
++            (i.el.querySelector("text") && !i.el.querySelector("path"));
++        if (
++            i.sys < 0 &&
++            band === systems.length - 1 &&
++            textOnly &&
++            i.bb.y > systems[band].y0 + 5 * sp
++        )
++            dy += ADD;
++        if (dy) {
++            const old = i.el.getAttribute("transform");
++            i.el.setAttribute(
++                "transform",
++                `translate(0 ${dy})` + (old ? ` ${old}` : "")
++            );
++        }
++    });
++    vb[3] += systems.length * ADD;
++    svg.setAttribute("viewBox", vb.join(" "));
++    for (const c of clones) svg.append(c);
++
++    // An accidental holds for the rest of the measure at the same height
++    let curMeasure: string | null = null;
++    let measureAcc: Record<number, number> = {};
++    for (const o of out) {
++        const s: System = systems[o.k];
++        const v = pickVoicing(o.chord, state.prevMean);
++        if (!v) continue;
++        state.prevMean = v.reduce((sum, x) => sum + x.n, 0) / v.length;
++        if (o.mid !== curMeasure) {
++            curMeasure = o.mid;
++            measureAcc = {};
++        }
++        drawBlock(svg, o.x, v, o.kind, {
++            topY: s.y0 + s.dy + 7 * sp,
++            sp,
++            keyAcc,
++            measureAcc,
++            left: o.left,
++            ink,
++        });
++    }
++}
+diff --git a/src/services/sheetOverlay/chords.ts b/src/services/sheetOverlay/chords.ts
+new file mode 100644
+index 0000000..9d9f08b
+--- /dev/null
++++ b/src/services/sheetOverlay/chords.ts
+@@ -0,0 +1,157 @@
++/**
++ * Chord symbols to notes, and the block-note voicing shown on the chord staff.
++ * Steps are diatonic: E4 (the bottom line of the treble staff) is 0.
++ */
++
++export const LET = ["C", "D", "E", "F", "G", "A", "B"];
++export const NATPC: Record<string, number> = {
++    C: 0,
++    D: 2,
++    E: 4,
++    F: 5,
++    G: 7,
++    A: 9,
++    B: 11,
++};
++export const SHARP_ORDER = ["F", "C", "G", "D", "A", "E", "B"];
++export const FLAT_ORDER = ["B", "E", "A", "D", "G", "C", "F"];
++
++const CHORD =
++    /^([A-G])([#b]?)(maj|min|dim|aug|sus2|sus4|m|M|\+)?(\d+)?(add\d+)?(?:\/([A-G])([#b]?))?$/;
++
++const accOf = (s: string) => (s === "#" ? 1 : s === "b" ? -1 : 0);
++
++/** A chord tone: `off` steps above the root, `li` the letter index (C = 0), `acc` its accidental. */
++export type ChordNote = { off: number; li: number; acc: number };
++export type Chord = {
++    ri: number;
++    notes: ChordNote[];
++    bass: { li: number; acc: number } | null;
++};
++/** One note of a voicing: `n` is the diatonic step. */
++export type VoiceNote = { n: number; li: number; acc: number };
++
++export function parseChord(sym: string): Chord | null {
++    const m = CHORD.exec(sym.trim());
++    if (!m) return null;
++    const [, rl, ra, q = "", num = "", add = "", bl, ba] = m;
++    let tones: [number, number][];
++    if (q === "sus2")
++        tones = [
++            [0, 0],
++            [1, 2],
++            [4, 7],
++        ];
++    else if (q === "sus4")
++        tones = [
++            [0, 0],
++            [3, 5],
++            [4, 7],
++        ];
++    else if (q === "dim")
++        tones = [
++            [0, 0],
++            [2, 3],
++            [4, 6],
++        ];
++    else if (q === "aug" || q === "+")
++        tones = [
++            [0, 0],
++            [2, 4],
++            [4, 8],
++        ];
++    else if (q === "m" || q === "min")
++        tones = [
++            [0, 0],
++            [2, 3],
++            [4, 7],
++        ];
++    else
++        tones = [
++            [0, 0],
++            [2, 4],
++            [4, 7],
++        ];
++    const maj = q === "maj" || q === "M";
++    if (num === "5")
++        tones = [
++            [0, 0],
++            [4, 7],
++        ];
++    else if (num === "6") tones.push([5, 9]);
++    else if (num === "7") tones.push([6, maj ? 11 : q === "dim" ? 9 : 10]);
++    else if (num === "9") tones.push([6, maj ? 11 : 10], [8, 14]);
++    if (add === "add9") tones.push([8, 14]);
++
++    const ri = LET.indexOf(rl);
++    const rootPc = NATPC[rl] + accOf(ra);
++    const spell = (li: number, pc: number) => {
++        let acc = (((pc - NATPC[LET[li]]) % 12) + 12) % 12;
++        if (acc > 6) acc -= 12;
++        return acc;
++    };
++    const notes: ChordNote[] = tones.map(([off, semi]) => {
++        const li = (ri + off) % 7;
++        return { off, li, acc: spell(li, rootPc + semi) };
++    });
++    let bass: Chord["bass"] = null;
++    if (bl) {
++        const b = { li: LET.indexOf(bl), acc: accOf(ba) };
++        bass = b;
++        if (!notes.some((n) => n.li === b.li && n.acc === b.acc)) {
++            notes.push({
++                off: ((b.li - ri + 7) % 7) - 7,
++                li: b.li,
++                acc: b.acc,
++            });
++        }
++    }
++    return { ri, notes, bass };
++}
++
++/** Every inversion and octave position of the chord (bass note respected). */
++function voicings(ch: Chord): VoiceNote[][] {
++    const out: VoiceNote[][] = [];
++    const want = (((ch.ri - 2) % 7) + 7) % 7;
++    for (let n0 = -14; n0 <= 14; n0++) {
++        if (((n0 % 7) + 7) % 7 !== want) continue;
++        let set: VoiceNote[] = ch.notes.map((x) => ({
++            n: n0 + x.off,
++            li: x.li,
++            acc: x.acc,
++        }));
++        set.sort((a, b) => a.n - b.n);
++        for (let r = 0; r < set.length; r++) {
++            const lo = set[0];
++            if (!ch.bass || (lo.li === ch.bass.li && lo.acc === ch.bass.acc))
++                out.push(set.map((x) => ({ ...x })));
++            set = set.slice(1).concat({ ...lo, n: lo.n + 7 });
++            set.sort((a, b) => a.n - b.n);
++        }
++    }
++    return out;
++}
++
++/** The voicing closest to the previous one's mean height, preferring C4 to G5. */
++export function pickVoicing(
++    ch: Chord,
++    prevMean: number | null
++): VoiceNote[] | null {
++    const target = prevMean ?? 1.5;
++    let best: VoiceNote[] | null = null;
++    let bestCost = Infinity;
++    for (const v of voicings(ch)) {
++        const lo = v[0].n;
++        const hi = v[v.length - 1].n;
++        if (lo < -5 || hi > 10) continue;
++        // Outside C4 (-2) to G5 (7) only with a penalty, so inversions like F#/A# or C#m7/B survive
++        const outside = Math.max(0, -2 - lo) + Math.max(0, hi - 7);
++        const mean = v.reduce((s, x) => s + x.n, 0) / v.length;
++        const cost = Math.abs(mean - target) + (hi - lo) * 0.05 + outside * 3;
++        if (cost < bestCost) {
++            bestCost = cost;
++            best = v;
++        }
++    }
++    return best;
++}
+diff --git a/src/services/sheetOverlay/draw.ts b/src/services/sheetOverlay/draw.ts
+new file mode 100644
+index 0000000..0c0d7a2
+--- /dev/null
++++ b/src/services/sheetOverlay/draw.ts
+@@ -0,0 +1,55 @@
++import { GLYPHS } from "./glyphs";
++
++const NS = "http://www.w3.org/2000/svg";
++
++/** Colours for what is drawn: the sheet's own ink (so it follows dark sheets too). */
++export type Ink = string;
++
++export function mk(tag: string, attrs: Record<string, string | number>) {
++    const e = document.createElementNS(NS, tag);
++    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
++    return e;
++}
++
++/** A glyph drawn left-aligned at x, centred vertically on yCenter, scaled by k (= staff spacing / 10). */
++export function glyph(
++    name: keyof typeof GLYPHS,
++    x: number,
++    yCenter: number,
++    k: number,
++    ink: Ink
++) {
++    const g = GLYPHS[name];
++    return mk("path", {
++        d: g.d,
++        fill: ink,
++        transform: `translate(${x} ${yCenter}) scale(${k}) translate(${-g.x} ${-(
++            g.y +
++            g.h / 2
++        )})`,
++    });
++}
++
++export function stroke(
++    x1: number,
++    y1: number,
++    x2: number,
++    y2: number,
++    width: number,
++    ink: Ink
++) {
++    return mk("path", {
++        d: `M${x1} ${y1}L${x2} ${y2}`,
++        stroke: ink,
++        "stroke-width": width,
++        fill: "none",
++    });
++}
++
++export function bbox(el: Element): DOMRect | null {
++    try {
++        return (el as SVGGraphicsElement).getBBox();
++    } catch {
++        return null;
++    }
++}
+diff --git a/src/services/sheetOverlay/glyphs.ts b/src/services/sheetOverlay/glyphs.ts
+new file mode 100644
+index 0000000..14f1203
+--- /dev/null
++++ b/src/services/sheetOverlay/glyphs.ts
+@@ -0,0 +1,61 @@
++/**
++ * Glyph outlines (path data) of the sheet renderer's note heads, accidentals and dots.
++ * x/y/w/h is the bounding box of each path at a staff-line spacing of 10; drawing positions
++ * a glyph by that box (see `glyph` in draw.ts).
++ */
++export type Glyph = { x: number; y: number; w: number; h: number; d: string };
++
++export const GLYPHS: Record<
++    "filled" | "open" | "whole" | "sharp" | "flat" | "natural" | "dot",
++    Glyph
++> = {
++    filled: {
++        x: 161.892,
++        y: 76.777,
++        w: 12.018,
++        h: 10.474,
++        d: "M161.89167999999998 82M169.24863999999997 76.77712C169.36095999999998 76.77712,169.52943999999997 76.77712,169.55751999999998 76.77712C169.55751999999998 76.77712,169.58559999999997 76.77712,169.58559999999997 76.77712C169.58559999999997 76.77712,169.75408 76.77712,169.89448 76.77712C172.42167999999998 76.91752,173.90991999999997 78.57424,173.90991999999997 80.65216C173.90991999999997 81.66304,173.57295999999997 82.81432,172.73055999999997 83.90944C171.12999999999997 86.0716,168.51855999999998 87.25096,166.24407999999997 87.25096C164.47503999999998 87.25096,162.95871999999997 86.54896,162.22863999999998 85.11688C162.004 84.55528,161.89167999999998 84.02176,161.89167999999998 83.43208C161.89167999999998 80.37136,165.31743999999998 76.97368,169.24863999999997 76.77712",
++    },
++    open: {
++        x: 926.442,
++        y: 111.777,
++        w: 12.018,
++        h: 10.474,
++        d: "M926.4419096401583 117M933.7988696401583 111.77712C933.9111896401583 111.77712,934.0796696401583 111.77712,934.1077496401583 111.77712C934.1077496401583 111.77712,934.1358296401584 111.77712,934.1358296401584 111.77712C934.1358296401584 111.77712,934.3043096401583 111.77712,934.4447096401583 111.77712C936.9719096401583 111.91752,938.4601496401583 113.57424,938.4601496401583 115.65216C938.4601496401583 116.66304,938.1231896401583 117.81432,937.2807896401583 118.90944C935.6802296401584 121.0716,933.0687896401583 122.25096,930.7943096401583 122.25096C929.0252696401583 122.25096,927.5089496401583 121.54896,926.7788696401583 120.11688C926.5542296401583 119.55528,926.4419096401583 119.02176,926.4419096401583 118.43208C926.4419096401583 115.37136,929.8676696401583 111.97368,933.7988696401583 111.77712M936.7191896401583 113.32152C936.6068696401583 113.26536,936.4664696401583 113.23728,936.3260696401583 113.23728C935.4555896401583 113.23728,933.9954296401584 113.7708,932.5914296401584 114.72552C929.9799896401584 116.35416,927.8459096401583 118.74096,927.7616696401583 120.11688C927.7616696401583 120.11688,927.7616696401583 120.14496,927.7616696401583 120.14496C927.7616696401583 120.62232,928.0705496401583 120.81888000000001,928.6040696401583 120.81888000000001C929.7553496401583 120.81888000000001,931.8894296401584 119.83608,933.8550296401584 118.2636C935.8767896401583 116.66304,937.1684696401583 114.86592,937.1684696401583 113.93928C937.1684696401583 113.6304,937.0280696401583 113.37768,936.7191896401583 113.32152",
++    },
++    whole: {
++        x: 922.586,
++        y: 96.777,
++        w: 17.382,
++        h: 10.474,
++        d: "M922.5863947584942 102M930.2803147584942 96.83328C930.5891947584942 96.77712,930.8980747584942 96.77712,931.2069547584941 96.77712C935.6435947584941 96.77712,939.3501547584942 98.74272,939.8836747584942 101.38224C939.9117547584942 101.63496,939.9679147584942 101.8596,939.9679147584942 102.02808C939.9679147584942 104.92032,936.1490347584942 107.25096,931.2350347584942 107.25096C926.3210347584942 107.25096,922.5863947584942 104.86416,922.5863947584942 102.02808C922.5863947584942 101.69112,922.6144747584942 101.35416,922.7267947584942 100.98912C923.4007147584941 98.7708,926.5456747584942 97.05792,930.2803147584942 96.83328M930.7015147584942 97.47912C930.5611147584942 97.45104,930.3645547584941 97.45104,930.2241547584941 97.45104C928.4551147584942 97.45104,927.3880747584942 98.96736,927.3880747584942 100.84872C927.3880747584942 101.8596,927.6969547584941 102.95472,928.3427947584942 104.04984C929.4098347584942 105.73464,930.9542347584942 106.57704,932.2739947584942 106.57704C933.3971947584942 106.57704,934.3799947584941 105.98736,934.8292747584942 104.75184C935.0258347584942 104.2464,935.1100747584942 103.74096,935.1100747584942 103.20744C935.1100747584942 100.68024,933.1725547584941 97.87224,930.7015147584942 97.47912",
++    },
++    sharp: {
++        x: 111,
++        y: 72.308,
++        w: 8.837,
++        h: 29.412,
++        d: "M111 87M116.93712 72.36240000000001C117.0192 72.30768,117.04656 72.30768,117.156 72.30768C117.4296 72.30768,117.62112 72.41712,117.7032 72.66336L117.73056 72.74544L117.75792 76.3296L117.75792 79.94112L118.46928 79.7496C118.87968 79.64016,119.18064 79.6128,119.37216 79.6128C119.6184 79.6128,119.72784 79.69488,119.80992 79.91376C119.83727999999999 79.99584,119.83727999999999 80.62512,119.83727999999999 81.30912000000001C119.83727999999999 81.96576,119.83727999999999 82.64976,119.80992 82.67712C119.70048 82.95072,119.6184 82.97808,118.87968 83.1696C117.94944 83.41584,117.75792 83.4432,117.75792 83.4432C117.75792 83.4432,117.75792 84.15456,117.75792 85.2216C117.75792 85.60464,117.75792 86.01504,117.75792 86.4528L117.75792 89.40768L118.46928 89.21616C118.90704 89.10672,119.18064 89.07936,119.37216 89.07936C119.50896 89.07936,119.6184 89.10672,119.70048 89.21616C119.83727999999999 89.38032,119.83727999999999 89.35296,119.83727999999999 90.36528L119.83727999999999 90.77568L119.83727999999999 91.21344C119.83727999999999 92.22576,119.83727999999999 92.19839999999999,119.70048 92.3352C119.59103999999999 92.44463999999999,119.6184 92.44463999999999,118.35984 92.7456C118.08624 92.82768,117.84 92.90976,117.81264 92.90976L117.75792 92.90976L117.75792 96.54864L117.73056 100.21488L117.7032 100.32432C117.62112 100.5432,117.40224 100.65264,117.156 100.65264C116.99184 100.65264,116.7456 100.5432,116.63616 100.32432L116.6088 100.21488L116.6088 96.7128L116.6088 93.21072L116.58144 93.21072L115.95216 93.37488L114.77568 93.67584C114.47472 93.75792,114.20112 93.81264,114.20112 93.81264C114.1464 93.81264,114.1464 94.00416,114.1464 97.5336L114.1464 101.30928L114.11904 101.39135999999999C114.0096 101.61024,113.79072 101.71968,113.5992 101.71968C113.38032 101.71968,113.13408 101.61024,113.02464 101.39135999999999L112.99728 101.30928L112.99728 97.69776C112.99728 94.35984,112.99728 94.1136,112.96992 94.1136C112.96992 94.1136,112.96992 94.1136,112.96992 94.1136C112.66896 94.19568,111.62928 94.46928,111.51984 94.46928C111.2736 94.46928,111.10944 94.30512,111 94.1136C111 94.00416,111 94.00416,111 92.71824L111 91.43232L111.02736 91.32288C111.1368 91.04928,111.1368 91.04928,112.66896 90.66624L112.99728 90.58416L112.99728 87.60192C112.99728 84.83856,112.99728 84.64704,112.96992 84.64704C112.96992 84.64704,112.96992 84.64704,112.96992 84.64704C112.66896 84.72912,111.62928 84.97536,111.51984 84.97536C111.2736 84.97536,111.10944 84.83856,111 84.64704C111 84.5376,111 84.5376,111 83.25168L111 81.96576L111.02736 81.85632C111.1368 81.58272,111.1368 81.58272,112.66896 81.19968L112.99728 81.1176L112.99728 77.47872L112.99728 73.83984L113.02464 73.7304C113.13408 73.53888,113.38032 73.37472,113.5992 73.37472C113.68128 73.37472,113.736 73.42944,113.81808 73.4568C113.92752 73.48416,114.03696 73.62096,114.11904 73.7304L114.1464 73.83984L114.1464 77.34192L114.1464 80.81664L114.31056 80.81664C114.36528 80.78928,114.85776 80.67984,115.35024 80.5704L116.41728 80.24208L116.6088 80.21472L116.6088 76.49376L116.6088 72.74544L116.63616 72.66336C116.71824 72.55392,116.80032 72.41712,116.93712 72.36240000000001M116.6088 86.75376C116.6088 85.0848,116.6088 83.74416,116.6088 83.74416L116.6088 83.74416C116.58144 83.74416,116.30784 83.82624,115.97952 83.90832L114.77568 84.20928C114.47472 84.29136,114.20112 84.34608,114.20112 84.34608C114.1464 84.34608,114.1464 84.51024,114.1464 87.32832L114.1464 90.33792L114.31056 90.2832C114.36528 90.25584,114.85776 90.1464,115.35024 90.03696L116.41728 89.76336L116.6088 89.68128L116.6088 86.75376",
++    },
++    flat: {
++        x: 110.425,
++        y: 107.708,
++        w: 7.442,
++        h: 23.557,
++        d: "M111 125M110.78112 107.73584C110.83584 107.70848000000001,110.89056 107.70848000000001,110.97264 107.70848000000001C111.21888 107.70848000000001,111.43776 107.81792,111.51984 108.0368C111.5472 108.14624,111.5472 108.14624,111.5472 114.52112L111.5472 120.95072L111.57456 120.86864C112.61424 119.99312,113.70864 119.55536000000001,114.74832 119.55536000000001C115.15872 119.55536000000001,115.56912 119.61008,115.97952 119.77424C117.21072 120.18464,117.86736 121.33376,117.86736 122.70176000000001C117.86736 123.41312,117.64848 124.20656,117.23808 125C116.63616 126.0944,115.87008 126.96992,113.736 128.88512L111.62928 130.8824C111.24624 131.26544,111.16416 131.26544,111 131.26544C110.75376 131.26544,110.53488 131.12864,110.4528 130.90976L110.42544 130.80032L110.42544 119.50064L110.42544 108.14624L110.4528 108.0368C110.53488 107.92736,110.64432 107.7632,110.78112 107.73584M114.0096 121.41584C113.90016 121.36112,113.736 121.36112,113.62656 121.36112C113.54448 121.36112,113.48976 121.36112,113.43504 121.36112C112.72368 121.47056,112.0944 121.90832,111.65664 122.61968L111.5472 122.8112L111.5472 126.01232L111.5472 129.26816L111.62928 129.15872C113.62656 126.96992,114.93984 124.4528,114.93984 122.78384L114.93984 122.72912C114.93984 121.90832,114.66624 121.55264,114.0096 121.41584",
++    },
++    natural: {
++        x: 241.332,
++        y: 198.36,
++        w: 6.539,
++        h: 25.308,
++        d: "M241.33216 211M241.60575999999998 198.4144C241.68784 198.35968,241.71519999999998 198.35968,241.87936 198.35968C242.09823999999998 198.35968,242.28976 198.46912,242.39919999999998 198.71536L242.42656 198.79744L242.42656 202.08064C242.42656 203.91376,242.42656 205.3912,242.42656 205.3912C242.42656 205.3912,243.52095999999997 205.1176,244.80687999999998 204.78928C246.69472 204.32416,247.15983999999997 204.18736,247.35136 204.18736C247.46079999999998 204.18736,247.48816 204.21472,247.54288 204.24208C247.65231999999997 204.2968,247.76175999999998 204.40624,247.84384 204.51568L247.8712 204.62512L247.8712 213.90016L247.8712 223.25728L247.84384 223.33936C247.7344 223.55824,247.48816 223.66768,247.32399999999998 223.66768C247.07775999999998 223.66768,246.85888 223.55824,246.74944 223.33936L246.72207999999998 223.25728L246.72207999999998 219.86464C246.72207999999998 217.78528,246.72207999999998 216.49936,246.72207999999998 216.49936C246.69472 216.49936,245.62768 216.7456,244.34176 217.10128C242.48128 217.5664,241.9888 217.7032,241.79728 217.7032C241.68784 217.7032,241.68784 217.67584,241.60575999999998 217.62112C241.49632 217.59376,241.38688 217.48432,241.33216 217.37488L241.33216 217.2928L241.33216 208.04512L241.33216 198.79744L241.33216 198.71536C241.38688 198.60592,241.49632 198.46912,241.60575999999998 198.4144M246.72207999999998 210.39808C246.72207999999998 209.87824,246.72207999999998 209.41312,246.72207999999998 209.0848C246.72207999999998 207.90832,246.72207999999998 207.82624,246.69472 207.82624L246.69472 207.82624C246.69472 207.82624,245.70976 208.09984,244.56063999999998 208.34608L242.42656 208.89328L242.42656 211.49248C242.42656 212.88784,242.42656 214.06432,242.42656 214.06432L244.588 213.54448L246.72207999999998 212.99728L246.72207999999998 210.39808",
++    },
++    dot: {
++        x: 222.928,
++        y: 80,
++        w: 4,
++        h: 4,
++        d: "M226.9279733333333 82 A2 2 0 0 0 222.9279733333333 82M222.9279733333333 82 A2 2 0 0 0 226.9279733333333 82",
++    },
++};
+diff --git a/src/services/sheetOverlay/index.ts b/src/services/sheetOverlay/index.ts
+new file mode 100644
+index 0000000..dc79070
+--- /dev/null
++++ b/src/services/sheetOverlay/index.ts
+@@ -0,0 +1,41 @@
++import { addChordStaff, type ChordStaffState } from "./chordStaff";
++import { drawSecondVoice, type VoiceState } from "./secondVoice";
++import { readLayout } from "./layout";
++
++export { harmonyBelow } from "./secondVoice";
++
++export type OverlayOptions = {
++    /** a second staff under each system with the chords as block notes */
++    chords: boolean;
++    /** a second voice (third below, fitted to the chords) in the melody staff */
++    voice: boolean;
++    /** colour of the second voice */
++    voiceColor: string;
++};
++
++/** Carried from page to page, in page order. */
++export type OverlayState = { chords: ChordStaffState; voice: VoiceState };
++
++export const newOverlayState = (): OverlayState => ({
++    chords: { carry: null, prevMean: null },
++    voice: { carry: null, prev: null },
++});
++
++/**
++ * Adds the chosen extras to one rendered page. Returns false when the page can't be measured
++ * yet (still hidden): call again once it is shown. A page that is no sheet page counts as done.
++ */
++export function enhancePage(
++    svg: SVGSVGElement,
++    options: OverlayOptions,
++    state: OverlayState
++): boolean {
++    if (!options.chords && !options.voice) return true;
++    if (svg.querySelectorAll("*").length < 30) return true; // an icon, not a page
++    const layout = readLayout(svg);
++    if (!layout) return false;
++    // The second voice first: it reads the notes where they are, before the chord staff shifts them
++    if (options.voice) drawSecondVoice(layout, options.voiceColor, state.voice);
++    if (options.chords) addChordStaff(svg, layout, state.chords);
++    return true;
++}
+diff --git a/src/services/sheetOverlay/layout.ts b/src/services/sheetOverlay/layout.ts
+new file mode 100644
+index 0000000..fd21f65
+--- /dev/null
++++ b/src/services/sheetOverlay/layout.ts
+@@ -0,0 +1,218 @@
++import { FLAT_ORDER, parseChord, SHARP_ORDER, type Chord } from "./chords";
++import { bbox } from "./draw";
++
++/**
++ * Reads the structure of a rendered sheet page. The renderer's SVG (VexFlow) has one
++ * `g.staffline` per system with its measures (`g.vf-measure`: five lines, bar line, and at the
++ * start of a line clef, key and time signature, plus the notes) and the chord symbols
++ * (`g.vf-text`).
++ */
++
++export type Measure = { x: number; x2: number; el: SVGGElement };
++export type PlacedChord = { chord: Chord; x: number; y: number };
++export type System = {
++    el: SVGGElement;
++    /** y of the top staff line */
++    y0: number;
++    measures: Measure[];
++    /** vertical offset applied to this system (set when the chord staff is added) */
++    dy: number;
++    chords: PlacedChord[];
++    /** clef, key and time signature groups at the line start, with their boxes */
++    prefix: { el: SVGGElement; bb: DOMRect }[];
++    /** right edge of that line start */
++    prefixEnd: number;
++};
++
++export type BarKind =
++    | "half"
++    | "dotted"
++    | "whole"
++    | "dottedQuarter"
++    | "dottedWhole"
++    | "quarter";
++
++export type Layout = {
++    systems: System[];
++    /** staff-line spacing */
++    sp: number;
++    /** accidentals of the key signature by letter, e.g. { F: 1, C: 1 } */
++    keyAcc: Record<string, number>;
++    /** note value that fills one bar, bar length in eighths, whether the metre is compound */
++    barKind: BarKind;
++    barUnits: number;
++    compound: boolean;
++    /** the sheet's own ink colour (staff lines), so drawn notes match it */
++    ink: string;
++};
++
++// Time signature digit glyphs (width x height rounded to 0.1). The number of path commands
++// varies between renderer versions, the size doesn't.
++const DIGITS: Record<string, string> = {
++    "13.2x19.4": "2",
++    "11.8x19.4": "3",
++    "13.5x19.4": "4",
++    "13.7x19.4": "6",
++    "14.1x19.4": "8",
++};
++const BAR_KIND: Record<string, BarKind> = {
++    "2/4": "half",
++    "3/4": "dotted",
++    "4/4": "whole",
++    "2/2": "whole",
++    "3/8": "dottedQuarter",
++    "6/8": "dotted",
++    "9/8": "dottedWhole",
++    "12/8": "dottedWhole",
++    "6/4": "dottedWhole",
++};
++const BAR_UNITS: Record<string, number> = {
++    "2/4": 4,
++    "3/4": 6,
++    "4/4": 8,
++    "2/2": 8,
++    "3/8": 3,
++    "6/8": 6,
++    "9/8": 9,
++    "12/8": 12,
++    "6/4": 12,
++};
++const COMPOUND = new Set(["3/8", "6/8", "9/8", "12/8"]);
++
++const has = (el: Element, cls: string) =>
++    !!el.classList && el.classList.contains(cls);
++const glyphKey = (b: DOMRect) => {
++    const n = (v: number) => Math.round(v * 10) / 10;
++    return `${n(b.width)}x${n(b.height)}`;
++};
++
++/** null when the page is not measurable (yet): hidden, or not a sheet page. */
++export function readLayout(svg: SVGSVGElement): Layout | null {
++    const systems: System[] = [];
++    let sp = 0;
++    for (const sg of Array.from(svg.children)) {
++        if (sg.tagName !== "g" || !has(sg, "staffline")) continue;
++        const measures: Measure[] = [];
++        let y0 = Infinity;
++        let y4 = -Infinity;
++        for (const me of Array.from(sg.children)) {
++            if (!has(me, "vf-measure")) continue;
++            let x = Infinity;
++            let x2 = -Infinity;
++            for (const p of Array.from(me.children)) {
++                if (p.tagName !== "path") continue;
++                const b = bbox(p);
++                if (!b || b.height !== 0 || b.width <= 20) continue; // a staff line
++                x = Math.min(x, b.x);
++                x2 = Math.max(x2, b.x + b.width);
++                y0 = Math.min(y0, b.y);
++                y4 = Math.max(y4, b.y);
++            }
++            if (Number.isFinite(x))
++                measures.push({ x, x2, el: me as SVGGElement });
++        }
++        if (!measures.length) continue;
++        measures.sort((a, b) => a.x - b.x);
++        sp = (y4 - y0) / 4;
++        systems.push({
++            el: sg as SVGGElement,
++            y0,
++            measures,
++            dy: 0,
++            chords: [],
++            prefix: [],
++            prefixEnd: 0,
++        });
++    }
++    if (!systems.length || !(sp > 3 && sp < 30)) return null;
++
++    for (const s of systems) {
++        for (const c of Array.from(s.el.children)) {
++            if (!has(c, "vf-text")) continue;
++            for (const t of Array.from(c.querySelectorAll("text"))) {
++                const chord = parseChord(t.textContent ?? "");
++                const x = parseFloat(t.getAttribute("x") ?? "");
++                const y = parseFloat(t.getAttribute("y") ?? "");
++                if (chord && Number.isFinite(x) && Number.isFinite(y))
++                    s.chords.push({ chord, x, y });
++            }
++        }
++        const first = s.measures[0];
++        s.prefix = Array.from(first.el.children)
++            .filter(
++                (c) =>
++                    c.tagName === "g" &&
++                    (has(c, "vf-clef") ||
++                        has(c, "vf-keysignature") ||
++                        has(c, "vf-timesignature"))
++            )
++            .map((el) => ({ el: el as SVGGElement, bb: bbox(el) }))
++            .filter(
++                (p): p is { el: SVGGElement; bb: DOMRect } =>
++                    !!p.bb && p.bb.width > 0
++            );
++        s.prefixEnd = s.prefix.length
++            ? Math.max(...s.prefix.map((p) => p.bb.x + p.bb.width))
++            : first.x;
++    }
++
++    // Ink: the staff lines' own colour
++    let ink = "#000000";
++    const line = systems[0].measures[0].el.querySelector("path");
++    if (line) {
++        const c = getComputedStyle(line).stroke;
++        if (c && c !== "none") ink = c;
++    }
++
++    // Key signature (first system): sharps or flats from the first sign's height, count of signs
++    const s0 = systems[0];
++    const keyAcc: Record<string, number> = {};
++    const keyEl = s0.prefix.find((p) => has(p.el, "vf-keysignature"));
++    const keyPaths = keyEl ? Array.from(keyEl.el.querySelectorAll("path")) : [];
++    if (keyPaths.length > 0) {
++        const f = bbox(keyPaths[0]);
++        if (f) {
++            const centre = f.y + f.height / 2;
++            const sharps =
++                Math.abs(centre - s0.y0) < Math.abs(centre - (s0.y0 + 2 * sp));
++            const order = sharps ? SHARP_ORDER : FLAT_ORDER;
++            order.slice(0, Math.min(keyPaths.length, 7)).forEach((l) => {
++                keyAcc[l] = sharps ? 1 : -1;
++            });
++        }
++    }
++
++    // Time signature from its digit glyphs (numerator above, denominator below)
++    let barKind: BarKind = "whole";
++    let barUnits = 8;
++    let compound = false;
++    const tsEl = s0.prefix.find((p) => has(p.el, "vf-timesignature"));
++    const ts = tsEl
++        ? Array.from(tsEl.el.querySelectorAll("path"))
++              .map((el) => ({ el, bb: bbox(el) }))
++              .filter((p): p is { el: SVGPathElement; bb: DOMRect } => !!p.bb)
++        : [];
++    const rowOf = (p: { bb: DOMRect }) =>
++        p.bb.y + p.bb.height / 2 < s0.y0 + 2 * sp ? 0 : 1;
++    const digits = [0, 1].map((r) =>
++        ts
++            .filter((p) => rowOf(p) === r)
++            .sort((a, b) => a.bb.x - b.bb.x)
++            .map((p) => DIGITS[glyphKey(p.bb)] ?? "?")
++            .join("")
++    );
++    const sig = digits.join("/");
++    barKind = BAR_KIND[sig] ?? barKind;
++    barUnits = BAR_UNITS[sig] ?? 0;
++    compound = COMPOUND.has(sig);
++    if (!BAR_KIND[sig] && ts.length === 2) {
++        // Unknown digits: as wide above as below like 4/4, otherwise 3/4
++        barKind =
++            Math.abs(ts[0].bb.width - ts[1].bb.width) < 0.5
++                ? "whole"
++                : "dotted";
++        barUnits = barKind === "whole" ? 8 : 6;
++    }
++
++    return { systems, sp, keyAcc, barKind, barUnits, compound, ink };
++}
+diff --git a/src/services/sheetOverlay/secondVoice.ts b/src/services/sheetOverlay/secondVoice.ts
+new file mode 100644
+index 0000000..8a7fffb
+--- /dev/null
++++ b/src/services/sheetOverlay/secondVoice.ts
+@@ -0,0 +1,262 @@
++import { bbox, glyph, mk, stroke } from "./draw";
++import { GLYPHS } from "./glyphs";
++import { type Chord, LET } from "./chords";
++import type { Layout } from "./layout";
++
++/**
++ * A second voice under the melody: by default a diatonic third below (the key signature's
++ * accidentals, so a major or minor third depending on the degree). When that note is not a
++ * tone of the current chord, it is adjusted to the nearest chord tone below the melody.
++ *
++ *  1. The melody note is a chord tone and the diatonic third below is too: use the third.
++ *  2. The melody note is a chord tone, the third is not: pick among the chord tones 1-5 steps
++ *     below the melody. A minor or major third (3-4 semitones) is preferred, then a fourth,
++ *     fifth, major second; a semitone clash or unison is excluded. Every step or semitone away
++ *     from the diatonic third costs extra, as do big leaps from the previous second-voice note.
++ *  3. The melody note is not a chord tone (passing or neighbour note): keep the diatonic third,
++ *     the second voice moves in parallel.
++ *
++ * Steps are diatonic: E4 (the bottom line of the treble staff) is 0.
++ */
++
++const PC = [0, 2, 4, 5, 7, 9, 11];
++const letterIndex = (n: number) => (((n + 2) % 7) + 7) % 7;
++export const midiOf = (n: number, acc: number) =>
++    12 * (5 + Math.floor((n + 2) / 7)) + PC[letterIndex(n)] + acc;
++
++/** Cost by distance in semitones to the melody; any other distance is not allowed. */
++const BASE_COST: Record<number, number> = {
++    3: 0,
++    4: 0,
++    5: 1.5,
++    7: 2.5,
++    2: 3,
++    6: 4,
++};
++
++export type Pitch = { n: number; acc: number };
++
++export function harmonyBelow(
++    note: Pitch,
++    {
++        chord = null,
++        keyAcc = {},
++        prev = null,
++    }: {
++        chord?: Chord | null;
++        keyAcc?: Record<string, number>;
++        prev?: Pitch | null;
++    } = {}
++): Pitch & { adjusted: boolean } {
++    const dn = note.n - 2;
++    const diat = { n: dn, acc: keyAcc[LET[letterIndex(dn)]] || 0 };
++    if (!chord) return { ...diat, adjusted: false };
++
++    const isTone = (n: number, acc: number) =>
++        chord.notes.some((t) => t.li === letterIndex(n) && t.acc === acc);
++    if (!isTone(note.n, note.acc)) return { ...diat, adjusted: false };
++    if (isTone(diat.n, diat.acc)) return { ...diat, adjusted: false };
++
++    const m = midiOf(note.n, note.acc);
++    const dm = midiOf(diat.n, diat.acc);
++    let best: Pitch | null = null;
++    let bestCost = Infinity;
++    for (let n = note.n - 5; n <= note.n - 1; n++) {
++        for (const t of chord.notes) {
++            if (t.li !== letterIndex(n)) continue;
++            const pm = midiOf(n, t.acc);
++            const base = BASE_COST[m - pm];
++            if (base === undefined) continue;
++            let cost = base + Math.abs(n - dn) + 0.5 * Math.abs(pm - dm);
++            if (prev) cost += 0.1 * Math.abs(pm - midiOf(prev.n, prev.acc));
++            if (cost < bestCost) {
++                bestCost = cost;
++                best = { n, acc: t.acc };
++            }
++        }
++    }
++    return best ? { ...best, adjusted: true } : { ...diat, adjusted: false };
++}
++
++/** Which accidental sign is this path? By its size relative to the staff spacing. */
++function accidentalOf(b: DOMRect, k: number) {
++    let best: { name: "sharp" | "flat" | "natural"; acc: number } | null = null;
++    let bestD = 4; // at most 0.4 staff spacings off
++    for (const [name, acc] of [
++        ["sharp", 1],
++        ["flat", -1],
++        ["natural", 0],
++    ] as const) {
++        const d = Math.hypot(
++            b.width / k - GLYPHS[name].w,
++            b.height / k - GLYPHS[name].h
++        );
++        if (d < bestD) {
++            bestD = d;
++            best = { name, acc };
++        }
++    }
++    return best;
++}
++
++/** Colours every filled area and existing stroke of an element tree. */
++function tint(root: Element, color: string) {
++    for (const e of Array.from(root.querySelectorAll("*"))) {
++        const fill = e.getAttribute("fill");
++        const stroke = e.getAttribute("stroke");
++        if (fill !== "none") {
++            e.setAttribute("fill", color);
++            (e as SVGElement).style.setProperty("fill", color);
++        }
++        if (stroke && stroke !== "none") {
++            e.setAttribute("stroke", color);
++            (e as SVGElement).style.setProperty("stroke", color);
++        }
++    }
++}
++
++/** Carried between the pages of one sheet. */
++export type VoiceState = { carry: Chord | null; prev: Pitch | null };
++
++/**
++ * Draws the second voice into the melody systems: a copy of each note head, moved to the new
++ * pitch, with accidental, ledger lines and an extended stem. Returns how many notes it drew.
++ */
++export function drawSecondVoice(
++    layout: Layout,
++    color: string,
++    state: VoiceState
++) {
++    const { systems, sp, keyAcc } = layout;
++    const k = sp / 10;
++    let drawn = 0;
++
++    for (const s of systems) {
++        const chords = [...s.chords].sort((a, b) => a.x - b.x);
++        const yOf = (n: number) => s.y0 + 4 * sp - (n * sp) / 2;
++        for (const m of s.measures) {
++            const measureAcc: Record<number, number> = {};
++            const notes = Array.from(m.el.querySelectorAll(".vf-stavenote"))
++                .map((el) => {
++                    // Rests have a notehead too, but are not about one staff spacing tall
++                    const heads = Array.from(
++                        el.querySelectorAll(".vf-notehead")
++                    )
++                        .map((h) => ({ el: h, b: bbox(h) }))
++                        .filter(
++                            (h): h is { el: Element; b: DOMRect } =>
++                                !!h.b &&
++                                h.b.width > 0 &&
++                                h.b.height > 0.8 * sp &&
++                                h.b.height < 1.25 * sp
++                        );
++                    return heads.length === 1 ? { el, head: heads[0] } : null;
++                })
++                .filter(
++                    (
++                        x
++                    ): x is {
++                        el: Element;
++                        head: { el: Element; b: DOMRect };
++                    } => !!x
++                )
++                .sort((a, b) => a.head.b.x - b.head.b.x);
++
++            for (const { el, head } of notes) {
++                const hb = head.b;
++                const cy = hb.y + hb.height / 2;
++                const n = Math.round((s.y0 + 4 * sp - cy) / (sp / 2));
++                const letter = LET[letterIndex(n)];
++
++                let melAcc: { name: string; acc: number; b: DOMRect } | null =
++                    null;
++                for (const p of Array.from(
++                    el.querySelectorAll(
++                        ".vf-modifiers path, .vf-accidental path"
++                    )
++                )) {
++                    const b = bbox(p);
++                    const a = b && accidentalOf(b, k);
++                    if (a && b) {
++                        melAcc = { ...a, b };
++                        break;
++                    }
++                }
++                const acc = melAcc
++                    ? melAcc.acc
++                    : measureAcc[n] ?? (keyAcc[letter] || 0);
++                measureAcc[n] = acc;
++
++                // The chord at this note: the last symbol at or just before it, else the one carried on
++                let chord = state.carry;
++                for (const c of chords) {
++                    if (c.x <= hb.x + sp) chord = c.chord;
++                    else break;
++                }
++
++                const h = harmonyBelow(
++                    { n, acc },
++                    { chord, keyAcc, prev: state.prev }
++                );
++                state.prev = h;
++
++                const g = mk("g", {});
++                const copy = head.el.cloneNode(true) as Element;
++                const old = copy.getAttribute("transform");
++                copy.setAttribute(
++                    "transform",
++                    `translate(0 ${((n - h.n) * sp) / 2})` +
++                        (old ? ` ${old}` : "")
++                );
++                g.append(copy);
++
++                const y = yOf(h.n);
++                const ledgers: number[] = [];
++                if (h.n <= -2)
++                    for (let l = -2; l >= h.n; l -= 2) ledgers.push(l);
++                else if (h.n >= 10)
++                    for (let l = 10; l <= h.n; l += 2) ledgers.push(l);
++                for (const l of ledgers)
++                    g.append(
++                        stroke(
++                            hb.x - 3 * k,
++                            yOf(l),
++                            hb.x + hb.width + 3 * k,
++                            yOf(l),
++                            1,
++                            color
++                        )
++                    );
++
++                // An accidental only where it differs from what already holds at that height
++                const inEffect =
++                    measureAcc[h.n] ?? (keyAcc[LET[letterIndex(h.n)]] || 0);
++                measureAcc[h.n] = h.acc;
++                if (h.acc !== inEffect && Math.abs(h.acc) <= 1) {
++                    const name =
++                        h.acc > 0 ? "sharp" : h.acc < 0 ? "flat" : "natural";
++                    const w = GLYPHS[name].w * k;
++                    let ax = hb.x - 2.5 * k - w;
++                    if (melAcc) ax = Math.min(ax, melAcc.b.x - 1.5 * k - w); // not onto the melody's accidental
++                    g.append(glyph(name, ax, y, k, color));
++                }
++
++                // Stem up: extend it down to the new note; stem down passes the new note anyway
++                const stem = el.querySelector(".vf-stem path");
++                const sb = stem && bbox(stem);
++                if (sb && sb.x + sb.width / 2 > hb.x + hb.width / 2) {
++                    const sx = sb.x + sb.width / 2;
++                    g.append(stroke(sx, cy, sx, y, 1.5, color));
++                }
++
++                tint(g, color);
++                s.el.append(g);
++                drawn++;
++            }
++            // The last chord of the measure carries into the next
++            const last = chords.filter((c) => c.x < m.x2).pop();
++            if (last) state.carry = last.chord;
++        }
++    }
++    return drawn;
++}
+diff --git a/src/views/Sheets.vue b/src/views/Sheets.vue
+index 5abcbfb..3990239 100644
+--- a/src/views/Sheets.vue
++++ b/src/views/Sheets.vue
+@@ -25,6 +25,7 @@
+             <div class="flex gap-2 shrink-0">
+                 <BandSync :startContext="bandSyncStartContext"></BandSync>
+                 <OfflineDownload :collectionId="collectionId"></OfflineDownload>
++                <DisplayMenu></DisplayMenu>
+                 <Settings
+                     v-model:transposition="transposition"
+                     v-model:theme="theme"
+@@ -56,6 +57,7 @@ import CollectionSelector from "../components/CollectionSelector.vue";
+ import SongSelector from "../components/SongSelector.vue";
+ import SheetViewer from "../components/SheetViewer.vue";
+ import Settings from "../components/Settings.vue";
++import DisplayMenu from "../components/DisplayMenu.vue";
+ import BandSync from "../components/BandSync.vue";
+ import OfflineDownload from "../components/OfflineDownload.vue";
+ import InstallPrompt from "../components/InstallPrompt.vue";
+-- 
+2.43.0
+
