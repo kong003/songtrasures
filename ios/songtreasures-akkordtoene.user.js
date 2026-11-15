@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        SongTreasures Akkordtöne
 // @description Zweite Notenzeile mit den Akkorden als Blocknoten
-// @version     0.9.0
+// @version     0.9.1
 // @downloadURL https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 // @updateURL   https://raw.githubusercontent.com/kong003/songtrasures/main/ios/songtreasures-akkordtoene.user.js
 // @match       https://sheets.songtreasures.app/*
@@ -251,9 +251,9 @@ function setupOptionsMenu() {
   style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}';
   document.head.append(style);
   const box = document.createElement("div");
-  box.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;font:14px sans-serif;color:#000;text-align:right";
+  box.style.cssText = "position:fixed;top:8px;right:60px;z-index:99999;font:14px sans-serif;color:#000;text-align:right";
   const menu = document.createElement("div");
-  menu.style.cssText = "display:none;margin-bottom:6px;padding:8px 12px;background:#fff;border:1px solid #888;" +
+  menu.style.cssText = "display:none;margin-top:6px;padding:8px 12px;background:#fff;border:1px solid #888;" +
     "border-radius:8px;text-align:left;box-shadow:0 2px 8px rgba(0,0,0,.25)";
   const btn = document.createElement("button");
   btn.textContent = "Anzeige";
@@ -274,8 +274,41 @@ function setupOptionsMenu() {
     menu.append(row);
   }
   btn.addEventListener("click", () => { menu.style.display = menu.style.display === "none" ? "block" : "none"; });
-  box.append(menu, btn);
+  box.append(btn, menu);
   document.body.append(box);
+
+  // Neben das Zahnrad (Einstellungen) setzen: Element mit passendem Namen im
+  // oberen Bildschirmbereich suchen und den Knopf links davon ausrichten. Wird
+  // keins gefunden, bleibt er oben rechts. Die Seite baut sich neu auf, daher
+  // regelmaessig nachziehen.
+  const GEAR = /settings|einstellung|gear|cog|zahnrad|setting/i;
+  const findGear = () => {
+    let best = null;
+    for (const e of document.querySelectorAll("button,a,[role=button],svg,i,span,div")) {
+      if (box.contains(e)) continue;
+      const key = [e.getAttribute("aria-label"), e.getAttribute("title"), e.getAttribute("data-testid"),
+        typeof e.className === "string" ? e.className : e.getAttribute("class"), e.id].filter(Boolean).join(" ");
+      if (!GEAR.test(key)) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.width > 120 || r.height > 120 || r.top > 150) continue;
+      // das Aeusserste (rechteste) Treffer-Element, damit nicht ein Unterelement gewinnt
+      if (!best || r.right > best.right || (r.right === best.right && r.width > best.width)) best = r;
+    }
+    return best;
+  };
+  const place = () => {
+    const g = findGear();
+    if (g) {
+      box.style.top = Math.max(0, g.top + (g.height - btn.offsetHeight) / 2) + "px";
+      box.style.right = Math.max(0, window.innerWidth - g.left + 8) + "px";
+    } else {
+      box.style.top = "8px";
+      box.style.right = "60px";
+    }
+  };
+  place();
+  setInterval(place, 700);
+  window.addEventListener("resize", place);
   applyOptions();
 }
 
