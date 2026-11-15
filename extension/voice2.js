@@ -69,7 +69,19 @@ function v2AccidentalOf(b, k) {
   return best;
 }
 
-// Zeichnet die zweite Stimme in die Melodiesysteme (je Notenkopf ein Kopf darunter).
+const V2_COLOR = "#1565c0";
+
+// Faerbt alles in g blau: gefuellte Flaechen und vorhandene Striche
+function v2Tint(g) {
+  for (const e of g.querySelectorAll("*")) {
+    const fill = e.getAttribute("fill");
+    const stroke = e.getAttribute("stroke");
+    if (fill !== "none") { e.setAttribute("fill", V2_COLOR); e.style.setProperty("fill", V2_COLOR); }
+    if (stroke && stroke !== "none") { e.setAttribute("stroke", V2_COLOR); e.style.setProperty("stroke", V2_COLOR); }
+  }
+}
+
+// Zeichnet die zweite Stimme in die Melodiesysteme (je Notenkopf ein blauer Kopf darunter).
 // systems: wie in annotate (el, y0, measures[{el}], chords[{chord,x}])
 function drawSecondVoice(svg, systems, { sp, keyAcc }) {
   const k = sp / 10;
@@ -147,6 +159,7 @@ function drawSecondVoice(svg, systems, { sp, keyAcc }) {
           g.append(stroke(sx, cy, sx, y, 1.5));
         }
 
+        v2Tint(g);
         s.el.append(g);
         drawn++;
       }
