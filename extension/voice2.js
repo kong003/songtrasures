@@ -181,19 +181,25 @@ function applyOptions() {
   document.querySelectorAll("svg").forEach((svg) => { if (svg.__stChordRow) svg.__stChordRow(ST_OPTS.chords); });
 }
 
-// Knopf unten rechts, darueber ein kleines Menue mit zwei Haken.
+// Knopf "Anzeige" mit kleinem Menue (zwei Haken). Er wird in die Zeile direkt
+// vor das Zahnrad eingefuegt und uebernimmt dessen Klassen, sodass er wie die
+// Knoepfe der Seite aussieht und nichts ueberdeckt. Findet sich kein Zahnrad,
+// sitzt er unten rechts.
 function setupOptionsMenu() {
   const style = document.createElement("style");
   style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}';
   document.head.append(style);
-  const box = document.createElement("div");
-  box.style.cssText = "position:fixed;top:8px;right:60px;z-index:99999;font:14px sans-serif;color:#000;text-align:right";
-  const menu = document.createElement("div");
-  menu.style.cssText = "display:none;margin-top:6px;padding:8px 12px;background:#fff;border:1px solid #888;" +
-    "border-radius:8px;text-align:left;box-shadow:0 2px 8px rgba(0,0,0,.25)";
+
   const btn = document.createElement("button");
+  btn.type = "button";
   btn.textContent = "Anzeige";
-  btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;background:#fff;color:#000;opacity:.9";
+  const corner = document.createElement("div");
+  corner.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999";
+  document.body.append(corner);
+
+  const menu = document.createElement("div");
+  menu.style.cssText = "display:none;position:fixed;z-index:99999;padding:8px 12px;background:#fff;color:#000;" +
+    "font:14px sans-serif;border:1px solid #888;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.25)";
   for (const [key, label] of [["chords", "Akkordzeile (2. Notenzeile)"], ["voice", "Zweite Stimme (blau)"]]) {
     const row = document.createElement("label");
     row.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 0;white-space:nowrap";
@@ -209,54 +215,53 @@ function setupOptionsMenu() {
     row.append(cb, label);
     menu.append(row);
   }
-  btn.addEventListener("click", () => { menu.style.display = menu.style.display === "none" ? "block" : "none"; });
-  box.append(btn, menu);
-  document.body.append(box);
+  document.body.append(menu);
 
-  // Neben das Zahnrad (Einstellungen) setzen: Element mit passendem Namen im
-  // oberen Bildschirmbereich suchen und den Knopf links davon ausrichten. Wird
-  // keins gefunden, bleibt er oben rechts. Die Seite baut sich neu auf, daher
-  // regelmaessig nachziehen.
-  const GEAR = /settings|einstellung|gear|cog|zahnrad|setting/i;
-  const LOGIN = /^\s*(log\s?in|sign\s?in|anmelden|einloggen)\s*$/i;
-  // Elemente der Kopfzeile: Zahnrad (nach Name) und Login (nach Text)
-  const headerItems = () => {
-    const out = [];
-    for (const e of document.querySelectorAll("button,a,[role=button],svg,i,span,div")) {
-      if (box.contains(e)) continue;
-      const key = [e.getAttribute("aria-label"), e.getAttribute("title"), e.getAttribute("data-testid"),
-        typeof e.className === "string" ? e.className : e.getAttribute("class"), e.id].filter(Boolean).join(" ");
-      const isGear = GEAR.test(key);
-      const isLogin = e.children.length <= 2 && LOGIN.test(e.textContent || "");
-      if (!isGear && !isLogin) continue;
-      const r = e.getBoundingClientRect();
-      if (r.width < 8 || r.height < 8 || r.width > 200 || r.height > 120 || r.top > 150) continue;
-      out.push({ r, isGear });
+  const openMenu = (open) => {
+    if (open) {
+      const r = btn.getBoundingClientRect();
+      menu.style.top = r.bottom + 6 + "px";
+      menu.style.right = Math.max(8, window.innerWidth - r.right) + "px";
     }
-    return out;
+    menu.style.display = open ? "block" : "none";
   };
-  // Bezugszeile: das Zahnrad, sonst Login; links von allem in derselben Zeile
-  const findAnchor = () => {
-    const items = headerItems();
-    if (!items.length) return null;
-    const ref = (items.filter((x) => x.isGear)[0] || items[0]).r;
-    const cy = ref.top + ref.height / 2;
-    const row = items.map((x) => x.r).filter((r) => Math.abs(r.top + r.height / 2 - cy) < 25);
-    return { cy, left: Math.min(...row.map((r) => r.left)) };
+  btn.addEventListener("click", (e) => { e.stopPropagation(); openMenu(menu.style.display === "none"); });
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) openMenu(false); });
+
+  // Das Zahnrad: Knopf/Link, dessen Name oder Icon nach Einstellungen klingt
+  const GEAR = /settings|einstellung|gear|cog|zahnrad/i;
+  const findGear = () => {
+    let best = null;
+    for (const e of document.querySelectorAll("button,a,[role=button]")) {
+      if (e === btn) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.width > 80 || r.height > 80 || r.top > 250) continue;
+      const parts = [e, ...e.querySelectorAll("svg,i,span")].flatMap((x) => [
+        x.getAttribute("aria-label"), x.getAttribute("title"), x.getAttribute("data-testid"), x.id,
+        typeof x.className === "string" ? x.className : x.getAttribute("class"),
+      ]);
+      if (!GEAR.test(parts.filter(Boolean).join(" "))) continue;
+      if (!best || r.right > best.r.right) best = { e, r };
+    }
+    return best && best.e;
   };
   const place = () => {
-    const a = findAnchor();
-    if (a) {
-      box.style.top = Math.max(0, a.cy - btn.offsetHeight / 2) + "px";
-      box.style.right = Math.max(0, window.innerWidth - a.left + 8) + "px";
-    } else {
-      box.style.top = "8px";
-      box.style.right = "60px";
+    const gear = findGear();
+    if (gear) {
+      if (btn.nextElementSibling !== gear) gear.parentElement.insertBefore(btn, gear);
+      btn.className = gear.className;
+      btn.style.cssText = "width:auto;min-width:0;padding:0 14px;white-space:nowrap;flex:none;margin-right:8px;" +
+        "font-size:14px;cursor:pointer";
+    } else if (btn.parentElement !== corner) {
+      btn.className = "";
+      btn.style.cssText = "padding:6px 12px;font:14px sans-serif;border:1px solid #888;border-radius:6px;" +
+        "background:#fff;color:#000;opacity:.9";
+      corner.append(btn);
     }
   };
   place();
-  setInterval(place, 700);
-  window.addEventListener("resize", place);
+  setInterval(place, 700);  // die Seite baut sich neu auf
+  window.addEventListener("resize", () => openMenu(false));
   applyOptions();
 }
 
