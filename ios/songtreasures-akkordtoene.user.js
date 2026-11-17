@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        SongTreasures Akkordtöne
 // @description Zweite Notenzeile mit den Akkorden als Blocknoten
-// @version     0.9.6
+// @version     0.9.7
 // @downloadURL https://raw.githubusercontent.com/kong003/songtreasures/main/ios/songtreasures-akkordtoene.user.js
 // @updateURL   https://raw.githubusercontent.com/kong003/songtreasures/main/ios/songtreasures-akkordtoene.user.js
 // @match       https://sheets.songtreasures.app/*
@@ -248,30 +248,51 @@ function applyOptions() {
   document.querySelectorAll("svg").forEach((svg) => { if (svg.__stChordRow) svg.__stChordRow(ST_OPTS.chords); });
 }
 
+// Das Zahnrad: Knopf/Link, dessen Name oder Icon nach Einstellungen klingt. Es ist
+// nur nach dem Login da; daran erkennen wir, ob jemand eingeloggt ist. Auf dem
+// Login-Bildschirm tut das Script nichts.
+const ST_GEAR = /settings|einstellung|gear|cog|zahnrad/i;
+function stFindGear() {
+  let best = null;
+  for (const e of document.querySelectorAll("button,a,[role=button]")) {
+    if (e.hasAttribute("data-st-eye")) continue;
+    const r = e.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8 || r.width > 80 || r.height > 80 || r.top > 250) continue;
+    const parts = [e, ...e.querySelectorAll("svg,i,span")].flatMap((x) => [
+      x.getAttribute("aria-label"), x.getAttribute("title"), x.getAttribute("data-testid"), x.id,
+      typeof x.className === "string" ? x.className : x.getAttribute("class"),
+    ]);
+    if (!ST_GEAR.test(parts.filter(Boolean).join(" "))) continue;
+    if (!best || r.right > best.r.right) best = { e, r };
+  }
+  return best && best.e;
+}
+const stLoggedIn = () => !!stFindGear();
+
 // Knopf mit Auge (Anzeige) rechts neben dem Zahnrad, in derselben Reihe. Er
 // uebernimmt die Klassen des Zahnrads (icon-button), das Menue nutzt die Klassen
 // der Seite (Karte wie der Einstellungs-Dialog, Auswahlfelder wie "Transposition").
-// Findet sich kein Zahnrad, sitzt der Knopf unten rechts.
+// Ohne Zahnrad (nicht eingeloggt) gibt es keinen Knopf.
 function setupOptionsMenu() {
   const style = document.createElement("style");
   style.textContent = 'html[data-st-v2="0"] [data-st-v2el]{display:none}' +
     '[data-st-v2el] [fill]:not([fill="none"]){fill:var(--st-v2,#1565c0)!important}' +
-    '[data-st-v2el] [stroke]:not([stroke="none"]){stroke:var(--st-v2,#1565c0)!important}';
+    '[data-st-v2el] [stroke]:not([stroke="none"]){stroke:var(--st-v2,#1565c0)!important}' +
+    // Textfarbe des Menues und des Ersatzknopfs: hell im Dark Mode der Seite (html.dark)
+    '.st-menu{color:#111827}html.dark .st-menu{color:#f9fafb}';
   document.head.append(style);
 
   const EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>';
   const btn = document.createElement("button");
   btn.type = "button";
+  btn.setAttribute("data-st-eye", "1");
   btn.title = "Display";
   btn.setAttribute("aria-label", "Display");
   const wrap = document.createElement("div");   // wie die Huelle um die anderen Knoepfe
   wrap.append(btn);
-  const corner = document.createElement("div");
-  corner.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999";
-  document.body.append(corner);
 
   const menu = document.createElement("div");
-  menu.className = "bg-white rounded-lg shadow dark:bg-slate-800";
+  menu.className = "st-menu bg-white rounded-lg shadow dark:bg-slate-800";
   menu.style.cssText = "display:none;position:fixed;z-index:99999;padding:12px;gap:12px;flex-wrap:wrap;max-width:calc(100vw - 16px);box-sizing:border-box;" +
     "border:1px solid rgba(128,128,128,.3);box-shadow:0 4px 12px rgba(0,0,0,.15)";
   for (const [key, label] of [["chords", "Chord staff"], ["voice", "Harmony"], ["color", "Harmony color"]]) {
@@ -308,23 +329,6 @@ function setupOptionsMenu() {
   btn.addEventListener("click", (e) => { e.stopPropagation(); openMenu(menu.style.display === "none"); });
   document.addEventListener("click", (e) => { if (!menu.contains(e.target)) openMenu(false); });
 
-  // Das Zahnrad: Knopf/Link, dessen Name oder Icon nach Einstellungen klingt
-  const GEAR = /settings|einstellung|gear|cog|zahnrad/i;
-  const findGear = () => {
-    let best = null;
-    for (const e of document.querySelectorAll("button,a,[role=button]")) {
-      if (e === btn) continue;
-      const r = e.getBoundingClientRect();
-      if (r.width < 8 || r.height < 8 || r.width > 80 || r.height > 80 || r.top > 250) continue;
-      const parts = [e, ...e.querySelectorAll("svg,i,span")].flatMap((x) => [
-        x.getAttribute("aria-label"), x.getAttribute("title"), x.getAttribute("data-testid"), x.id,
-        typeof x.className === "string" ? x.className : x.getAttribute("class"),
-      ]);
-      if (!GEAR.test(parts.filter(Boolean).join(" "))) continue;
-      if (!best || r.right > best.r.right) best = { e, r };
-    }
-    return best && best.e;
-  };
   let mode = "";
   let iconFor = null;
   const setIcon = (gear) => {
@@ -337,7 +341,7 @@ function setupOptionsMenu() {
     btn.replaceChildren(svg);
   };
   const place = () => {
-    const gear = findGear();
+    const gear = stFindGear();
     if (gear) {
       // direkt rechts neben das Zahnrad (dessen Huelle), gleiche Reihe
       // (der Zahnrad-Knopf steckt in Huellen; wir suchen das Element, das direkt
@@ -354,15 +358,12 @@ function setupOptionsMenu() {
         btn.removeAttribute("style");
         setIcon(gear);
       }
-    } else if (mode !== "corner") {
-      mode = "corner";
-      iconFor = null;
+    } else if (wrap.isConnected) {
+      // nicht eingeloggt (oder Seite baut sich gerade um): Knopf und Menue weg
       wrap.remove();
-      btn.className = "icon-button";
-      btn.style.cssText = "width:42px;height:42px;display:flex;align-items:center;justify-content:center;" +
-        "border:1px solid #d1d5db;border-radius:8px;background:#f9fafb;color:#111827";
-      setIcon(null);
-      corner.append(btn);
+      openMenu(false);
+      mode = "";
+      iconFor = null;
     }
   };
   place();
@@ -893,6 +894,7 @@ const MAX_TRIES = 40;
 // Nur Poll-Durchlaeufe zaehlen als Versuch (eine Aenderung der Seite loest
 // viele Mutationen kurz hintereinander aus).
 function scan(countTry) {
+  if (!stLoggedIn()) return;  // nur nach dem Login aktiv
   document.querySelectorAll("svg").forEach((svg) => {
     if (svg.hasAttribute(MARK)) return;
     const tries = Number(svg.getAttribute("data-st-tries") || 0);

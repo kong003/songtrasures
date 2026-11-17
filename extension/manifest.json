@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SongTreasures Akkordtöne",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "Zeigt in SongTreasures Sheets die Akkordtöne und eine zweite Stimme (Terz tiefer) an.",
   "content_scripts": [
     {

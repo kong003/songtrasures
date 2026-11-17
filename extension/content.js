@@ -520,6 +520,7 @@ const MAX_TRIES = 40;
 // Nur Poll-Durchlaeufe zaehlen als Versuch (eine Aenderung der Seite loest
 // viele Mutationen kurz hintereinander aus).
 function scan(countTry) {
+  if (!stLoggedIn()) return;  // nur nach dem Login aktiv
   document.querySelectorAll("svg").forEach((svg) => {
     if (svg.hasAttribute(MARK)) return;
     const tries = Number(svg.getAttribute("data-st-tries") || 0);
