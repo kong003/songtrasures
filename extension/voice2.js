@@ -150,6 +150,19 @@ function drawSecondVoice(svg, systems, { sp, keyAcc }) {
           g.append(glyph(name, ax, y, k));
         }
 
+        // Punktierung: die Punkte der Melodienote (kleine Kreise rechts vom Kopf)
+        // an die neue Tonhoehe setzen. Auf einer Linie steht der Punkt im Zwischenraum darueber.
+        const dotY = yOf(h.n) - (((h.n % 2) + 2) % 2 === 0 ? sp / 2 : 0);
+        for (const p of el.querySelectorAll(".vf-modifiers path")) {
+          const b = bb(p);
+          if (!b || b.width < 0.2 * sp || b.width > 0.6 * sp || Math.abs(b.width - b.height) > 0.1 * sp) continue;
+          if (b.x < hb.x + hb.width - 0.2 * sp || Math.abs(b.y + b.height / 2 - cy) > sp) continue;
+          const dot = p.cloneNode(true);
+          const dOld = dot.getAttribute("transform");
+          dot.setAttribute("transform", `translate(0 ${dotY - (b.y + b.height / 2)})` + (dOld ? ` ${dOld}` : ""));
+          g.append(dot);
+        }
+
         // Hals nach oben bis zur neuen Note verlaengern; bei Hals nach unten
         // geht er ohnehin an der neuen Note vorbei.
         const stem = el.querySelector(".vf-stem path");

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        SongTreasures Akkordtöne
 // @description Zweite Notenzeile mit den Akkorden als Blocknoten
-// @version     0.9.7
+// @version     0.9.8
 // @downloadURL https://raw.githubusercontent.com/kong003/songtreasures/main/ios/songtreasures-akkordtoene.user.js
 // @updateURL   https://raw.githubusercontent.com/kong003/songtreasures/main/ios/songtreasures-akkordtoene.user.js
 // @match       https://sheets.songtreasures.app/*
@@ -212,6 +212,19 @@ function drawSecondVoice(svg, systems, { sp, keyAcc }) {
           let ax = hb.x - 2.5 * k - w;
           if (melAcc) ax = Math.min(ax, melAcc.b.x - 1.5 * k - w);  // nicht auf das Vorzeichen der Melodie
           g.append(glyph(name, ax, y, k));
+        }
+
+        // Punktierung: die Punkte der Melodienote (kleine Kreise rechts vom Kopf)
+        // an die neue Tonhoehe setzen. Auf einer Linie steht der Punkt im Zwischenraum darueber.
+        const dotY = yOf(h.n) - (((h.n % 2) + 2) % 2 === 0 ? sp / 2 : 0);
+        for (const p of el.querySelectorAll(".vf-modifiers path")) {
+          const b = bb(p);
+          if (!b || b.width < 0.2 * sp || b.width > 0.6 * sp || Math.abs(b.width - b.height) > 0.1 * sp) continue;
+          if (b.x < hb.x + hb.width - 0.2 * sp || Math.abs(b.y + b.height / 2 - cy) > sp) continue;
+          const dot = p.cloneNode(true);
+          const dOld = dot.getAttribute("transform");
+          dot.setAttribute("transform", `translate(0 ${dotY - (b.y + b.height / 2)})` + (dOld ? ` ${dOld}` : ""));
+          g.append(dot);
         }
 
         // Hals nach oben bis zur neuen Note verlaengern; bei Hals nach unten
