@@ -231,7 +231,10 @@ function setupOptionsMenu() {
     '.st-menu{color:#111827}html.dark .st-menu{color:#f9fafb}';
   document.head.append(style);
 
-  const EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>';
+  const EYE = [
+    ["path", { d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" }],
+    ["circle", { cx: "12", cy: "12", r: "3" }],
+  ];
   const btn = document.createElement("button");
   btn.type = "button";
   btn.setAttribute("data-st-eye", "1");
@@ -286,7 +289,11 @@ function setupOptionsMenu() {
     for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
       "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" })) svg.setAttribute(k, v);
     if (!g) { svg.setAttribute("width", "20"); svg.setAttribute("height", "20"); }
-    svg.innerHTML = EYE;
+    for (const [tag, attrs] of EYE) {
+      const part = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [k, v] of Object.entries(attrs)) part.setAttribute(k, v);
+      svg.append(part);
+    }
     btn.replaceChildren(svg);
   };
   const place = () => {

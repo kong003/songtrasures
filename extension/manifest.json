@@ -3,10 +3,21 @@
   "name": "SongTreasures Akkordtöne",
   "version": "0.9.8",
   "description": "Zeigt in SongTreasures Sheets die Akkordtöne und eine zweite Stimme (Terz tiefer) an.",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  },
   "content_scripts": [
     {
-      "matches": ["https://sheets.songtreasures.app/*"],
-      "js": ["glyphs.js", "voice2.js", "content.js"],
+      "matches": [
+        "https://sheets.songtreasures.app/*"
+      ],
+      "js": [
+        "glyphs.js",
+        "voice2.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
